@@ -145,7 +145,7 @@ function summaryText(report) {
     `[Ranking Cache] avg=${cache.avg_ms}ms p95=${cache.p95_ms}ms rps=${cache.rps} fail=${cache.fail_rate}`,
     `[Improvement] avg=${comparison.avg_latency_improvement_pct}% p95=${comparison.p95_latency_improvement_pct}% rps=${comparison.rps_gain_pct}%`,
     '',
-  ].join('\\n');
+  ].join('\n');
 }
 
 export function handleSummary(data) {

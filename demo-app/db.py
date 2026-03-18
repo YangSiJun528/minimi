@@ -2,28 +2,34 @@ from __future__ import annotations
 
 import math
 import random
-import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+from pymongo import MongoClient
 
 CatalogProduct = dict[str, Any]
 RankingPayload = dict[str, Any]
 
 
-class SlowDemoDatabase:
-    def __init__(self) -> None:
-        self._catalog = self._build_catalog(catalog_size=1000)
+class MongoDemoDatabase:
+    def __init__(self, uri: str) -> None:
+        self._client: MongoClient[dict[str, Any]] = MongoClient(uri)
+        self._db = self._client.get_default_database()
+        self._products = self._db["products"]
+        self._preview_snapshot: RankingPayload | None = None
+
+    def seed(self) -> None:
+        self._products.drop()
+        docs = self._build_catalog(catalog_size=1000)
+        self._products.insert_many(docs)
         self._preview_snapshot = self._calculate_top_ranking(limit=5)
 
-    def compute_top_ranking(self, limit: int = 10) -> tuple[RankingPayload, int]:
-        delay_ms = random.randint(100, 200)
-        time.sleep(delay_ms / 1000)
-        return self._calculate_top_ranking(limit=limit), delay_ms
+    def compute_top_ranking(self, limit: int = 10) -> RankingPayload:
+        return self._calculate_top_ranking(limit=limit)
 
     def preview_top_ranking(self, limit: int = 5) -> RankingPayload:
-        if limit == 5:
+        if limit == 5 and self._preview_snapshot is not None:
             return deepcopy(self._preview_snapshot)
 
         return self._calculate_top_ranking(limit=limit)
@@ -82,9 +88,10 @@ class SlowDemoDatabase:
         return catalog
 
     def _calculate_top_ranking(self, limit: int) -> RankingPayload:
+        products = list(self._products.find({}, {"_id": 0}))
         scored_products: list[dict[str, Any]] = []
 
-        for product in self._catalog:
+        for product in products:
             weighted_demand = 0.0
             weighted_engagement = 0.0
             weighted_sales = 0.0
@@ -162,7 +169,7 @@ class SlowDemoDatabase:
         return {
             "ranking_name": "Outerwear Momentum Ranking",
             "algorithm_version": "views+likes+wishlists+sales+reviews+repeat-buyers+freshness",
-            "catalog_size": len(self._catalog),
+            "catalog_size": self._products.count_documents({}),
             "top_n": limit,
             "computed_at": datetime.now(timezone.utc).isoformat(),
             "top_products": top_products,

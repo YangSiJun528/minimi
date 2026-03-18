@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from dashboard import DemoMetricsStore, build_dashboard_html, build_dashboard_payload
-from db import SlowDemoDatabase
+from db import MongoDemoDatabase
 
 
 logger = logging.getLogger("demo-app")
@@ -88,12 +88,14 @@ class CachePlaygroundResponse(BaseModel):
 class MongoGateway:
     def __init__(self, uri: str) -> None:
         self._uri = uri
-        self._database = SlowDemoDatabase()
+        self._database = MongoDemoDatabase(uri)
+        self._database.seed()
 
     def ping(self) -> str:
+        self._database._client.admin.command("ping")
         return f"ok ({self._uri})"
 
-    def compute_ranking(self, limit: int = 10) -> tuple[dict[str, Any], int]:
+    def compute_ranking(self, limit: int = 10) -> dict[str, Any]:
         return self._database.compute_top_ranking(limit=limit)
 
     def preview_ranking(self, limit: int = 5) -> dict[str, Any]:
@@ -146,7 +148,12 @@ class MiniRedisClient:
         return payload.get("value")
 
     def delete(self, key: str) -> bool:
-        payload = self._delete(f"/delete?key={key}")
+        try:
+            response = self._client.delete("/delete", params={"key": key})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"miniredis DELETE /delete failed") from exc
+        payload = response.json()
         return bool(payload.get("success", False))
 
     def exists(self, key: str) -> bool:
@@ -213,15 +220,14 @@ def ranking_direct() -> RankingResponse:
     started_at = time.perf_counter()
     cache_key = build_cache_key()
 
-    ranking, delay_ms = mongo_gateway.compute_ranking(limit=10)
+    ranking = mongo_gateway.compute_ranking(limit=10)
     ranking_payload = RankingPayload.model_validate(ranking)
 
     logger.info(
-        "ranking direct computed key=%s catalog_size=%s top_n=%s delay_ms=%s",
+        "ranking direct computed key=%s catalog_size=%s top_n=%s",
         cache_key,
         ranking_payload.catalog_size,
         ranking_payload.top_n,
-        delay_ms,
     )
     metrics_store.record_ranking_direct(duration_ms=(time.perf_counter() - started_at) * 1000, success=True)
     return RankingResponse(
@@ -229,7 +235,6 @@ def ranking_direct() -> RankingResponse:
         ranking=ranking_payload,
         source="db",
         cache_status="bypass",
-        db_delay_ms=delay_ms,
     )
 
 
@@ -240,9 +245,9 @@ def ranking_cache() -> RankingResponse:
 
     try:
         cached_payload = validate_ranking_payload(miniredis_client.get(cache_key))
-    except RuntimeError as exc:
-        metrics_store.record_ranking_cache(duration_ms=(time.perf_counter() - started_at) * 1000, success=False)
-        raise HTTPException(status_code=502, detail=f"cache read failed: {exc}") from exc
+    except RuntimeError:
+        logger.warning("cache read failed key=%s, falling back to db", cache_key, exc_info=True)
+        cached_payload = None
 
     if cached_payload is not None:
         logger.info("cache hit key=%s", cache_key)
@@ -264,13 +269,9 @@ def ranking_cache() -> RankingResponse:
     with ranking_cache_lock:
         try:
             second_check_payload = validate_ranking_payload(miniredis_client.get(cache_key))
-        except RuntimeError as exc:
-            metrics_store.record_ranking_cache(
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                success=False,
-                cache_status="miss",
-            )
-            raise HTTPException(status_code=502, detail=f"cache read failed: {exc}") from exc
+        except RuntimeError:
+            logger.warning("cache read failed (second check) key=%s, falling back to db", cache_key, exc_info=True)
+            second_check_payload = None
 
         if second_check_payload is not None:
             logger.info("cache hit after wait key=%s", cache_key)
@@ -287,7 +288,7 @@ def ranking_cache() -> RankingResponse:
                 cache_ttl_seconds=CACHE_TTL_SECONDS,
             )
 
-        ranking, delay_ms = mongo_gateway.compute_ranking(limit=10)
+        ranking = mongo_gateway.compute_ranking(limit=10)
         ranking_payload = RankingPayload.model_validate(ranking)
 
         try:
@@ -296,14 +297,8 @@ def ranking_cache() -> RankingResponse:
                 ranking_payload.model_dump(mode="json"),
                 ttl_seconds=CACHE_TTL_SECONDS,
             )
-        except RuntimeError as exc:
-            metrics_store.record_ranking_cache(
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                success=False,
-                cache_status="miss",
-            )
-            logger.warning("cache set failed key=%s", cache_key, exc_info=True)
-            raise HTTPException(status_code=502, detail=f"cache write failed: {exc}") from exc
+        except RuntimeError:
+            logger.warning("cache set failed key=%s, returning db result anyway", cache_key, exc_info=True)
 
     metrics_store.record_ranking_cache(
         duration_ms=(time.perf_counter() - started_at) * 1000,
@@ -316,7 +311,6 @@ def ranking_cache() -> RankingResponse:
         source="db",
         cache_status="miss",
         cache_ttl_seconds=CACHE_TTL_SECONDS,
-        db_delay_ms=delay_ms,
     )
 
 
