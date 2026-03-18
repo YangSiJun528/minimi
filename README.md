@@ -85,7 +85,7 @@
 - `GET /ranking-direct` → 캐시 없이 DB 조회
 - `GET /ranking-cache` → 캐시 적용 조회
 
-## 실행 방법
+## 📌 실행 방법
 ### Docker
 
 ```bash
@@ -184,14 +184,14 @@ curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
 - 저장소 로직을 **동기 방식으로 단순화**
 - 필요한 부분(TTL cleanup 등)에만 비동기 또는 주기 작업 적용
 - 
-## 결과 해석
+## 📌 결과 해석
 
 - `ranking-direct`는 모든 요청이 100~200ms 지연과 1000개 후보 점수 계산을 직접 맞기 때문에 평균 응답 시간과 p95가 높게 나와야 정상이다.
 - `ranking-cache`는 초반 miss와 TTL 만료 구간 일부 요청만 느리고, 대부분은 hit이므로 평균 응답 시간과 p95가 더 낮아져야 정상이다.
 - `ranking_cache_requests`의 rate가 `ranking_direct_requests`보다 높으면 같은 시간에 더 많은 요청을 처리했다는 뜻이다.
 - 실패율이 0에 가깝고 latency 차이가 뚜렷하면 캐시 효과가 잘 재현된 것이다.
 
-## 검증
+## 📌 검증
 
 예시 검증 명령:
 
