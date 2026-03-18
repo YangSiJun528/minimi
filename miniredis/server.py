@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from time import sleep
 
 from fastapi import FastAPI, Query
@@ -37,40 +35,27 @@ async def healthcheck() -> BaseResponse:
 @app.post("/set", response_model=BaseResponse)
 async def set_value(request: SetRequest) -> BaseResponse:
     store.set(request.key, request.value, request.ttl_seconds)
-    return BaseResponse(success=True, message=f"Stored key '{request.key}'")
+    return BaseResponse(success=True, message="ok")
 
 
-@app.get("/get", response_model=GetResponse)
-async def get_value(key: str = Query(..., min_length=1)) -> GetResponse:
-    value = store.get(key)
-    found = value is not None
-    return GetResponse(
-        success=True,
-        message=None if found else f"Key '{key}' not found",
-        key=key,
-        value=value,
-        found=found,
-    )
+@app.post("/get", response_model=GetResponse)
+async def get_value(request: KeyRequest) -> GetResponse:
+    if not store.exists(request.key):
+        return GetResponse(success=False, key=request.key, value=None, found=False, message="not found")
+    value = store.get(request.key)
+    return GetResponse(success=True, key=request.key, value=value, found=True, message="ok")
 
 
-@app.delete("/delete", response_model=BaseResponse)
-async def delete_value(key: str = Query(..., min_length=1)) -> BaseResponse:
-    deleted = store.delete(key)
-    return BaseResponse(
-        success=deleted,
-        message=f"Deleted key '{key}'" if deleted else f"Key '{key}' not found",
-    )
+@app.post("/delete", response_model=BaseResponse)
+async def delete_value(request: KeyRequest) -> BaseResponse:
+    deleted = store.delete(request.key)
+    return BaseResponse(success=deleted, message="deleted" if deleted else "not found")
 
 
-@app.get("/exists", response_model=ExistsResponse)
-async def exists_value(key: str = Query(..., min_length=1)) -> ExistsResponse:
-    exists = store.exists(key)
-    return ExistsResponse(
-        success=True,
-        message=None,
-        key=key,
-        exists=exists,
-    )
+@app.post("/exists", response_model=ExistsResponse)
+async def exists_value(request: KeyRequest) -> ExistsResponse:
+    exists = store.exists(request.key)
+    return ExistsResponse(success=exists, key=request.key, exists=exists)
 
 
 @app.get("/db-direct")
@@ -101,3 +86,36 @@ async def cache_lookup(record_id: int = Query(..., alias="id", ge=1)) -> dict[st
         "source": "db",
         "cache_hit": False,
     }
+
+
+@app.get("/get", response_model=GetResponse)
+async def get_value_for_benchmark(key: str = Query(..., min_length=1)) -> GetResponse:
+    value = store.get(key)
+    found = value is not None
+    return GetResponse(
+        success=True,
+        message=None if found else f"Key '{key}' not found",
+        key=key,
+        value=value,
+        found=found,
+    )
+
+
+@app.delete("/delete", response_model=BaseResponse)
+async def delete_value_for_benchmark(key: str = Query(..., min_length=1)) -> BaseResponse:
+    deleted = store.delete(key)
+    return BaseResponse(
+        success=deleted,
+        message=f"Deleted key '{key}'" if deleted else f"Key '{key}' not found",
+    )
+
+
+@app.get("/exists", response_model=ExistsResponse)
+async def exists_value_for_benchmark(key: str = Query(..., min_length=1)) -> ExistsResponse:
+    exists = store.exists(key)
+    return ExistsResponse(
+        success=True,
+        message=None,
+        key=key,
+        exists=exists,
+    )
