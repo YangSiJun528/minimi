@@ -140,11 +140,16 @@ class MiniRedisClient:
         return payload.get("value")
 
     def delete(self, key: str) -> bool:
-        payload = self._post("/delete", {"key": key})
+        try:
+            response = self._client.delete("/delete", params={"key": key})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"miniredis DELETE /delete failed") from exc
+        payload = response.json()
         return bool(payload.get("success", False))
 
     def exists(self, key: str) -> bool:
-        payload = self._post("/exists", {"key": key})
+        payload = self._get(f"/exists?key={key}")
         return bool(payload.get("exists", False))
 
     def close(self) -> None:
