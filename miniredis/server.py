@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+﻿from fastapi import FastAPI
 
 from core import MiniRedisStore
 from protocol import (
@@ -17,24 +17,50 @@ store = MiniRedisStore()
 
 @app.get("/health", response_model=BaseResponse)
 async def healthcheck() -> BaseResponse:
-    pass
+    return BaseResponse(success=True, message="ok")
 
 
 @app.post("/set", response_model=BaseResponse)
 async def set_value(request: SetRequest) -> BaseResponse:
-    pass
+    store.set(request.key, request.value, request.ttl_seconds)
+    return BaseResponse(success=True, message="ok")
 
 
 @app.post("/get", response_model=GetResponse)
 async def get_value(request: KeyRequest) -> GetResponse:
-    pass
+    if not store.exists(request.key):
+        return GetResponse(success=False, key=request.key, value=None, found=False, message="not found")
+    value = store.get(request.key)
+    return GetResponse(success=True, key=request.key, value=value, found=True, message="ok")
 
 
 @app.post("/delete", response_model=BaseResponse)
 async def delete_value(request: KeyRequest) -> BaseResponse:
-    pass
+    deleted = store.delete(request.key)
+    return BaseResponse(success=deleted, message="deleted" if deleted else "not found")
 
 
 @app.post("/exists", response_model=ExistsResponse)
 async def exists_value(request: KeyRequest) -> ExistsResponse:
-    pass
+    exists = store.exists(request.key)
+    return ExistsResponse(success=exists, key=request.key, exists=exists)
+
+
+@app.post("/expire", response_model=BaseResponse)
+async def expire_value(request: ExpireRequest) -> BaseResponse:
+    updated = store.expire(request.key, request.ttl_seconds)
+    return BaseResponse(success=updated, message="updated" if updated else "not found")
+
+
+@app.post("/ttl", response_model=TTLResponse)
+async def ttl_value(request: KeyRequest) -> TTLResponse:
+    if not store.exists(request.key):
+        return TTLResponse(success=False, key=request.key, ttl_seconds=None, found=False, message="not found")
+    ttl_seconds = store.ttl(request.key)
+    return TTLResponse(success=True, key=request.key, ttl_seconds=ttl_seconds, found=True, message="ok")
+
+
+@app.post("/cleanup_expired", response_model=BaseResponse)
+async def cleanup_expired() -> BaseResponse:
+    removed = store.cleanup_expired()
+    return BaseResponse(success=True, message=f"cleaned={removed}")

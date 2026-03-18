@@ -1,36 +1,78 @@
-from __future__ import annotations
+﻿from __future__ import annotations
+
+import threading
+import time
 
 from protocol import JSONValue
 
 
 class MiniRedisStore:
     def __init__(self) -> None:
-        """저장소와 TTL 상태를 초기화한다."""
-        pass
+        self._store: dict[str, tuple[JSONValue, float | None]] = {}
+        self._lock = threading.Lock()
+
+    def _now(self) -> float:
+        return time.time()
+
+    def _cleanup_expired_locked(self, now: float) -> int:
+        expired_keys: list[str] = [
+            key for key, (_, expire_at) in self._store.items() if expire_at is not None and expire_at <= now
+        ]
+        for key in expired_keys:
+            self._store.pop(key, None)
+        return len(expired_keys)
+
+    def _is_expired(self, key: str, now: float) -> bool:
+        expire_at = self._store.get(key, (None, None))[1]
+        return expire_at is not None and expire_at <= now
 
     def set(self, key: str, value: JSONValue, ttl_seconds: int | None = None) -> None:
-        """키에 JSON 값을 저장하고 필요하면 TTL을 설정한다."""
-        pass
+        expire_at = self._now() + ttl_seconds if ttl_seconds is not None else None
+        with self._lock:
+            self._store[key] = (value, expire_at)
 
     def get(self, key: str) -> JSONValue | None:
-        """키가 존재하고 만료되지 않았으면 값을 반환한다."""
-        pass
+        now = self._now()
+        with self._lock:
+            self._cleanup_expired_locked(now)
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            return entry[0]
 
     def delete(self, key: str) -> bool:
-        """키를 삭제하고 실제로 삭제됐는지 반환한다."""
-        pass
+        with self._lock:
+            self._cleanup_expired_locked(self._now())
+            return self._store.pop(key, None) is not None
 
     def exists(self, key: str) -> bool:
-        """키가 현재 유효하게 존재하는지 확인한다."""
-        pass
+        now = self._now()
+        with self._lock:
+            if self._is_expired(key, now):
+                self._store.pop(key, None)
+                return False
+            return key in self._store
 
-    # TODO: 시간 남으면 하기
-    # def expire(self, key: str, ttl_seconds: int) -> bool:
-    #     """기존 키에 TTL을 설정하거나 갱신한다."""
-    #     pass
-    #
-    # def ttl(self, key: str) -> int | None:
-    #     pass
-    #
-    # def cleanup_expired(self) -> int:
-    #     pass
+    def expire(self, key: str, ttl_seconds: int) -> bool:
+        now = self._now()
+        with self._lock:
+            if key not in self._store or self._is_expired(key, now):
+                self._store.pop(key, None)
+                return False
+            self._store[key] = (self._store[key][0], now + ttl_seconds)
+            return True
+
+    def ttl(self, key: str) -> int | None:
+        now = self._now()
+        with self._lock:
+            if key not in self._store or self._is_expired(key, now):
+                self._store.pop(key, None)
+                return None
+            _, expire_at = self._store[key]
+            if expire_at is None:
+                return None
+            return max(0, int(expire_at - now))
+
+    def cleanup_expired(self) -> int:
+        with self._lock:
+            return self._cleanup_expired_locked(self._now())
