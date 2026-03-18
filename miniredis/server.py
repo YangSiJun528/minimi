@@ -51,7 +51,7 @@ async def exists_value(key: str) -> ExistsResponse:
 async def incr_value(request: KeyRequest) -> IncrResponse:
     try:
         value = store.incr(request.key)
-    except ValueError as exc:
+    except AssertionError as exc:
         return IncrResponse(success=False, key=request.key, value=None, message=str(exc))
     return IncrResponse(success=True, key=request.key, value=value, message="ok")
 

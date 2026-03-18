@@ -70,8 +70,7 @@ class MiniRedisStore:
     def incr(self, key: str) -> int:
         self._is_expired(key)
         current = self._data.get(key, 0)
-        if type(current) is not int:
-            raise ValueError(f"값이 int가 아닙니다: {type(current).__name__}")
+        assert type(current) is int, f"값이 int가 아닙니다: {type(current).__name__}"
         new_value = current + 1
         self._data[key] = new_value
         return new_value
