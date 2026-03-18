@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from dashboard import DemoMetricsStore, build_dashboard_html, build_dashboard_payload
-from db import SlowDemoDatabase
+from db import MongoDemoDatabase
 
 
 logger = logging.getLogger("demo-app")
@@ -88,12 +88,14 @@ class CachePlaygroundResponse(BaseModel):
 class MongoGateway:
     def __init__(self, uri: str) -> None:
         self._uri = uri
-        self._database = SlowDemoDatabase()
+        self._database = MongoDemoDatabase(uri)
+        self._database.seed()
 
     def ping(self) -> str:
+        self._database._client.admin.command("ping")
         return f"ok ({self._uri})"
 
-    def compute_ranking(self, limit: int = 10) -> tuple[dict[str, Any], int]:
+    def compute_ranking(self, limit: int = 10) -> dict[str, Any]:
         return self._database.compute_top_ranking(limit=limit)
 
     def preview_ranking(self, limit: int = 5) -> dict[str, Any]:
@@ -205,15 +207,14 @@ def ranking_direct() -> RankingResponse:
     started_at = time.perf_counter()
     cache_key = build_cache_key()
 
-    ranking, delay_ms = mongo_gateway.compute_ranking(limit=10)
+    ranking = mongo_gateway.compute_ranking(limit=10)
     ranking_payload = RankingPayload.model_validate(ranking)
 
     logger.info(
-        "ranking direct computed key=%s catalog_size=%s top_n=%s delay_ms=%s",
+        "ranking direct computed key=%s catalog_size=%s top_n=%s",
         cache_key,
         ranking_payload.catalog_size,
         ranking_payload.top_n,
-        delay_ms,
     )
     metrics_store.record_ranking_direct(duration_ms=(time.perf_counter() - started_at) * 1000, success=True)
     return RankingResponse(
@@ -221,7 +222,6 @@ def ranking_direct() -> RankingResponse:
         ranking=ranking_payload,
         source="db",
         cache_status="bypass",
-        db_delay_ms=delay_ms,
     )
 
 
@@ -279,7 +279,7 @@ def ranking_cache() -> RankingResponse:
                 cache_ttl_seconds=CACHE_TTL_SECONDS,
             )
 
-        ranking, delay_ms = mongo_gateway.compute_ranking(limit=10)
+        ranking = mongo_gateway.compute_ranking(limit=10)
         ranking_payload = RankingPayload.model_validate(ranking)
 
         try:
@@ -308,7 +308,6 @@ def ranking_cache() -> RankingResponse:
         source="db",
         cache_status="miss",
         cache_ttl_seconds=CACHE_TTL_SECONDS,
-        db_delay_ms=delay_ms,
     )
 
 
