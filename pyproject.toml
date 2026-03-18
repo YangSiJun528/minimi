@@ -1,0 +1,9 @@
+[project]
+name = "minimi"
+version = "0.1.0"
+description = "Minimi is Mini My In-Memory"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.135.1",
+    "uvicorn>=0.42.0",
+]
