@@ -134,7 +134,7 @@ class MiniRedisClient:
         self._post("/set", payload)
 
     def get(self, key: str) -> object | None:
-        payload = self._post("/get", {"key": key})
+        payload = self._get(f"/get?key={key}")
         if not payload.get("found", False):
             return None
         return payload.get("value")
