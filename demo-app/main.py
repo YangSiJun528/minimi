@@ -232,9 +232,9 @@ def ranking_cache() -> RankingResponse:
 
     try:
         cached_payload = validate_ranking_payload(miniredis_client.get(cache_key))
-    except RuntimeError as exc:
-        metrics_store.record_ranking_cache(duration_ms=(time.perf_counter() - started_at) * 1000, success=False)
-        raise HTTPException(status_code=502, detail=f"cache read failed: {exc}") from exc
+    except RuntimeError:
+        logger.warning("cache read failed key=%s, falling back to db", cache_key, exc_info=True)
+        cached_payload = None
 
     if cached_payload is not None:
         logger.info("cache hit key=%s", cache_key)
@@ -256,13 +256,9 @@ def ranking_cache() -> RankingResponse:
     with ranking_cache_lock:
         try:
             second_check_payload = validate_ranking_payload(miniredis_client.get(cache_key))
-        except RuntimeError as exc:
-            metrics_store.record_ranking_cache(
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                success=False,
-                cache_status="miss",
-            )
-            raise HTTPException(status_code=502, detail=f"cache read failed: {exc}") from exc
+        except RuntimeError:
+            logger.warning("cache read failed (second check) key=%s, falling back to db", cache_key, exc_info=True)
+            second_check_payload = None
 
         if second_check_payload is not None:
             logger.info("cache hit after wait key=%s", cache_key)
@@ -288,14 +284,8 @@ def ranking_cache() -> RankingResponse:
                 ranking_payload.model_dump(mode="json"),
                 ttl_seconds=CACHE_TTL_SECONDS,
             )
-        except RuntimeError as exc:
-            metrics_store.record_ranking_cache(
-                duration_ms=(time.perf_counter() - started_at) * 1000,
-                success=False,
-                cache_status="miss",
-            )
-            logger.warning("cache set failed key=%s", cache_key, exc_info=True)
-            raise HTTPException(status_code=502, detail=f"cache write failed: {exc}") from exc
+        except RuntimeError:
+            logger.warning("cache set failed key=%s, returning db result anyway", cache_key, exc_info=True)
 
     metrics_store.record_ranking_cache(
         duration_ms=(time.perf_counter() - started_at) * 1000,
