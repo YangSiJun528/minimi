@@ -11,6 +11,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, ValidationError
+from pymongo.errors import PyMongoError
 
 from dashboard import DemoMetricsStore, build_dashboard_html, build_dashboard_payload
 from db import MongoDemoDatabase
@@ -88,18 +89,39 @@ class CachePlaygroundResponse(BaseModel):
 class MongoGateway:
     def __init__(self, uri: str) -> None:
         self._uri = uri
-        self._database = MongoDemoDatabase(uri)
-        self._database.seed()
+        self._database: MongoDemoDatabase | None = None
+
+    def connect(self, retries: int = 30, delay_seconds: float = 1.0) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                database = MongoDemoDatabase(self._uri)
+                database.seed()
+                self._database = database
+                logger.info("mongodb ready uri=%s attempt=%s", self._uri, attempt)
+                return
+            except PyMongoError as exc:
+                last_error = exc
+                logger.warning("mongodb not ready uri=%s attempt=%s/%s", self._uri, attempt, retries)
+                time.sleep(delay_seconds)
+
+        raise RuntimeError(f"mongodb startup failed after {retries} attempts") from last_error
+
+    def _require_database(self) -> MongoDemoDatabase:
+        if self._database is None:
+            raise RuntimeError("mongodb gateway not initialized")
+        return self._database
 
     def ping(self) -> str:
-        self._database._client.admin.command("ping")
+        database = self._require_database()
+        database._client.admin.command("ping")
         return f"ok ({self._uri})"
 
     def compute_ranking(self, limit: int = 10) -> dict[str, Any]:
-        return self._database.compute_top_ranking(limit=limit)
+        return self._require_database().compute_top_ranking(limit=limit)
 
     def preview_ranking(self, limit: int = 5) -> dict[str, Any]:
-        return self._database.preview_top_ranking(limit=limit)
+        return self._require_database().preview_top_ranking(limit=limit)
 
 
 class MiniRedisClient:
@@ -184,6 +206,11 @@ mongo_gateway = MongoGateway(os.getenv("MONGODB_URI", "mongodb://localhost:27017
 miniredis_client = MiniRedisClient(os.getenv("MINIREDIS_BASE_URL", "http://localhost:8000"))
 metrics_store = DemoMetricsStore()
 ranking_cache_lock = threading.Lock()
+
+
+@app.on_event("startup")
+def startup() -> None:
+    mongo_gateway.connect()
 
 
 @app.get("/health", response_model=HealthResponse)

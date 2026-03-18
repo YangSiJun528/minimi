@@ -341,6 +341,14 @@ def build_dashboard_html() -> str:
     </section>
 
     <section class="section reveal">
+      <div class="section-head">
+        <div><div class="eyebrow">성능 검증</div><h2>측정된 결과를 숫자로 바로 보여줍니다</h2></div>
+        <p id="proof-copy">표시할 측정 카드가 아직 없습니다.</p>
+      </div>
+      <div class="proof-grid" id="proof-grid"></div>
+    </section>
+
+    <section class="section reveal">
       <details>
         <summary>운영자 실험 패널</summary>
         <div class="operator-body">
@@ -370,7 +378,7 @@ def build_dashboard_html() -> str:
     function fmtPrice(v){if(v===null||v===undefined)return "-";return `${new Intl.NumberFormat("ko-KR").format(Number(v))}원`}
     function fmtRps(v){if(v===null||v===undefined)return "-";return `${Number(v).toFixed(1)} rps`}
     function setText(id,v){const el=document.getElementById(id);if(el)el.textContent=v}
-    function appendLog(id,message,clear=false){const target=document.getElementById(id);const stamp=new Date().toLocaleTimeString("ko-KR");target.textContent=clear?`[${stamp}] ${message}`:`${target.textContent}\n[${stamp}] ${message}`}
+    function appendLog(id,message,clear=false){const target=document.getElementById(id);if(!target)return;const stamp=new Date().toLocaleTimeString("ko-KR");target.textContent=clear?`[${stamp}] ${message}`:`${target.textContent}\n[${stamp}] ${message}`}
     let revealObserver = null
     function activateReveal(){
       const items = document.querySelectorAll(".reveal")
@@ -388,28 +396,34 @@ def build_dashboard_html() -> str:
       setText("hero-subtitle", hero.subtitle || "상위 상품을 불러오는 중입니다.")
       setText("featured-name", featured.name || "대표 상품")
       setText("featured-copy", featured.name ? `${featured.brand} / ${fmtPrice(featured.price_krw)} / 전환율 ${fmtPct(featured.conversion_pct)}` : "데이터를 불러오는 중입니다.")
-      document.getElementById("featured-image").src = featured.image_url || ""
+      const image = document.getElementById("featured-image")
+      if(image) image.src = featured.image_url || ""
       const chips = document.getElementById("hero-chips")
+      if(!chips) return
       chips.innerHTML = ""
       ;(hero.chips || []).forEach((chip)=>{const el=document.createElement("span");el.className="chip";el.textContent=chip;chips.appendChild(el)})
     }
     function renderCollections(data){
       const grid = document.getElementById("collections-grid")
+      if(!grid) return
       grid.innerHTML = ""
       ;(data.collections || []).forEach((collection)=>{const card=document.createElement("article");card.className="panel collection reveal";card.innerHTML=`<div class="eyebrow">${collection.title}</div><h3>${collection.title}</h3><div class="collection-grid">${(collection.products || []).map((product)=>`<article class="product-card"><div class="product-thumb"><img src="${product.image_url}" alt="${product.name}" loading="lazy" /></div><div><div class="product-kicker">#${product.rank} / ${product.brand}</div><div class="product-name">${product.name}</div><div class="meta"><span>${fmtPrice(product.price_krw)}</span><span>전환 ${fmtPct(product.conversion_pct)}</span><span>위시 ${fmtNumber(product.wishlists_28d)}</span></div></div></article>`).join("")}</div>`;grid.appendChild(card)})
     }
     function renderSignals(data){
       const grid = document.getElementById("signals-grid")
+      if(!grid) return
       grid.innerHTML = ""
       ;(data.signals || []).forEach((signal)=>{const card=document.createElement("article");card.className="panel signal-card reveal";card.innerHTML=`<div class="eyebrow">${signal.title}</div><h3>${signal.title}</h3><p>${signal.copy}</p>`;grid.appendChild(card)})
     }
     function renderRankingPreview(products){
       const container = document.getElementById("ranking-preview")
+      if(!container) return
       if(!products || !products.length){container.innerHTML='<div class="empty">랭킹 데이터를 불러오지 못했습니다.</div>';return}
       container.innerHTML = products.map((product)=>`<div class="ranking-row"><div class="pill">#${product.rank}</div><div><strong>${product.name}</strong><br /><span class="fine">${product.brand} / ${product.category}</span></div><div>${fmtPrice(product.price_krw)}</div><div>조회 ${fmtNumber(product.views_28d)}</div><div>판매 ${fmtNumber(product.sales_28d)}</div><div>${product.score}</div></div>`).join("")
     }
     function renderK6Compare(data){
       const target = document.getElementById("k6-compare-panel")
+      if(!target) return
       const compare = data.k6_compare || {}
       if(!compare.available){
         target.innerHTML = '<div class="k6-empty">k6 비교 리포트가 아직 없습니다. 테스트 결과가 생성되면 여기에 바로 표시됩니다.</div>'
@@ -461,19 +475,41 @@ def build_dashboard_html() -> str:
       setText("live-direct-avg", fmtMs(cacheDemo.direct_avg_ms))
       setText("proof-copy", proof.cards?.length ? "측정된 k6 결과를 반영했습니다." : "표시할 측정 카드가 아직 없습니다.")
       const grid = document.getElementById("proof-grid")
+      if(!grid) return
       grid.innerHTML = (proof.cards || []).length ? (proof.cards || []).map((card)=>`<article class="panel proof-card reveal"><div class="eyebrow">${card.label}</div><strong>${card.value}</strong><div class="fine">${card.detail}</div></article>`).join("") : '<article class="panel proof-card reveal"><div class="empty">표시할 성능 카드가 없습니다.</div></article>'
     }
-    async function loadDashboard(){
-      const response = await fetch("/dashboard-data")
-      if(!response.ok) throw new Error("dashboard-data failed")
-      const data = await response.json()
-      renderHero(data)
-      renderCollections(data)
-      renderSignals(data)
-      renderRankingPreview(data.ranking_preview?.top_products || [])
-      renderK6Compare(data)
-      renderProof(data)
-      activateReveal()
+    let dashboardLoadInFlight = false
+    let dashboardPollHandle = null
+    async function loadDashboard(silent=false){
+      if(dashboardLoadInFlight) return
+      dashboardLoadInFlight = true
+      try{
+        const response = await fetch("/dashboard-data", { cache: "no-store" })
+        if(!response.ok) throw new Error("dashboard-data failed")
+        const data = await response.json()
+        renderHero(data)
+        renderCollections(data)
+        renderSignals(data)
+        renderRankingPreview(data.ranking_preview?.top_products || [])
+        renderK6Compare(data)
+        renderProof(data)
+        activateReveal()
+      } catch(error) {
+        if(!silent) throw error
+        appendLog("result-log", `대시보드 새로고침 실패: ${error.message}`, true)
+        document.querySelectorAll(".reveal").forEach((item)=>item.classList.add("is-visible"))
+      } finally {
+        dashboardLoadInFlight = false
+      }
+    }
+    function startDashboardPolling(){
+      if(dashboardPollHandle !== null) return
+      dashboardPollHandle = window.setInterval(()=>{
+        if(!document.hidden) loadDashboard(true)
+      }, 2000)
+      document.addEventListener("visibilitychange", ()=>{
+        if(!document.hidden) loadDashboard(true)
+      })
     }
     async function runRequest(url, label){
       const started = performance.now()
@@ -483,7 +519,7 @@ def build_dashboard_html() -> str:
       if(!response.ok) throw new Error(payload.detail || `${label} 실패`)
       appendLog("result-log", `${label} / ${payload.cache_status} / ${payload.source} / ${elapsed.toFixed(0)}ms`, true)
       renderRankingPreview(payload.ranking?.top_products || [])
-      await loadDashboard()
+      await loadDashboard(true)
       return payload
     }
     async function playgroundRequest(method){
@@ -508,7 +544,12 @@ def build_dashboard_html() -> str:
     document.getElementById("playground-set").addEventListener("click", ()=>playgroundRequest("set").catch((error)=>appendLog("playground-log", error.message, true)))
     document.getElementById("playground-get").addEventListener("click", ()=>playgroundRequest("get").catch((error)=>appendLog("playground-log", error.message, true)))
     document.getElementById("playground-delete").addEventListener("click", ()=>playgroundRequest("delete").catch((error)=>appendLog("playground-log", error.message, true)))
-    loadDashboard().catch((error)=>appendLog("result-log", `초기 로딩 실패: ${error.message}`, true))
+    activateReveal()
+    startDashboardPolling()
+    loadDashboard().catch((error)=>{
+      appendLog("result-log", `초기 로딩 실패: ${error.message}`, true)
+      document.querySelectorAll(".reveal").forEach((item)=>item.classList.add("is-visible"))
+    })
   </script>
 </body>
 </html>"""
