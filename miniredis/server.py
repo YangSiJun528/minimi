@@ -46,16 +46,19 @@ async def exists_value(request: KeyRequest) -> ExistsResponse:
     return ExistsResponse(success=exists, key=request.key, exists=exists)
 
 
-@app.post("/expire", response_model=BaseResponse)
-async def expire_value(request: ExpireRequest) -> BaseResponse:
-    pass
+# @app.post("/expire", response_model=BaseResponse)
+# async def expire_value(request: ExpireRequest) -> BaseResponse:
+#     # TODO: expire 기능은 다음 단계에서 구현한다.
+#     pass
 
 
-@app.post("/ttl", response_model=TTLResponse)
-async def ttl_value(request: KeyRequest) -> TTLResponse:
-    pass
+# @app.post("/ttl", response_model=TTLResponse)
+# async def ttl_value(request: KeyRequest) -> TTLResponse:
+#     # TODO: ttl 기능은 다음 단계에서 구현한다.
+#     pass
 
 
-@app.post("/cleanup_expired", response_model=BaseResponse)
-async def cleanup_expired() -> BaseResponse:
-    pass
+# @app.post("/cleanup_expired", response_model=BaseResponse)
+# async def cleanup_expired() -> BaseResponse:
+#     # TODO: cleanup_expired 기능은 다음 단계에서 구현한다.
+#     pass
