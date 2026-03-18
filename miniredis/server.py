@@ -49,10 +49,7 @@ async def exists_value(key: str) -> ExistsResponse:
 
 @app.post("/incr", response_model=IncrResponse)
 async def incr_value(request: KeyRequest) -> IncrResponse:
-    try:
-        value = store.incr(request.key)
-    except AssertionError as exc:
-        return IncrResponse(success=False, key=request.key, value=None, message=str(exc))
+    value = store.incr(request.key)
     return IncrResponse(success=True, key=request.key, value=value, message="ok")
 
 
