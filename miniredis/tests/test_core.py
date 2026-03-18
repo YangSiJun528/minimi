@@ -517,6 +517,52 @@ class TestMutability:
 
 
 # ===========================================================================
+# INCR
+# ===========================================================================
+
+class TestIncr:
+    def test_없는_키에_incr하면_1로_시작한다(self, store: MiniRedisStore) -> None:
+        result = store.incr("counter")
+
+        assert result == 1
+        assert store.get("counter") == 1
+
+    def test_int_값에_incr하면_1씩_증가한다(self, store: MiniRedisStore) -> None:
+        store.set("counter", 10)
+
+        first = store.incr("counter")
+        second = store.incr("counter")
+
+        assert first == 11
+        assert second == 12
+        assert store.get("counter") == 12
+
+    def test_만료된_키에_incr하면_1로_다시_시작한다(self, store: MiniRedisStore) -> None:
+        base = 1000.0
+        with patch("core.time") as mock_time:
+            mock_time.monotonic.return_value = base
+            store.set("counter", 5, ttl_seconds=1)
+
+            mock_time.monotonic.return_value = base + 1
+            result = store.incr("counter")
+
+        assert result == 1
+        assert store.get("counter") == 1
+
+    def test_int가_아닌_값에_incr하면_예외가_난다(self, store: MiniRedisStore) -> None:
+        store.set("counter", "1")
+
+        with pytest.raises(AssertionError, match="str"):
+            store.incr("counter")
+
+    def test_bool_값에_incr하면_예외가_난다(self, store: MiniRedisStore) -> None:
+        store.set("counter", True)
+
+        with pytest.raises(AssertionError, match="bool"):
+            store.incr("counter")
+
+
+# ===========================================================================
 # 메모리 사용량 테스트
 # ===========================================================================
 
