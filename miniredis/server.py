@@ -78,18 +78,18 @@ app = FastAPI(title="Mini Redis", lifespan=lifespan)
 
 
 @app.get("/health", response_model=BaseResponse)
-def healthcheck() -> BaseResponse:
+async def healthcheck() -> BaseResponse:
     return BaseResponse(success=True, message="ok")
 
 
 @app.post("/set", response_model=BaseResponse)
-def set_value(request: SetRequest) -> BaseResponse:
+async def set_value(request: SetRequest) -> BaseResponse:
     store.set(request.key, request.value, request.ttl_seconds)
     return BaseResponse(success=True, message="ok")
 
 
 @app.get("/get", response_model=GetResponse)
-def get_value(key: str) -> GetResponse:
+async def get_value(key: str) -> GetResponse:
     if not store.exists(key):
         return GetResponse(success=False, key=key, value=None, found=False, message="not found")
     value = store.get(key)
@@ -97,31 +97,31 @@ def get_value(key: str) -> GetResponse:
 
 
 @app.delete("/delete", response_model=BaseResponse)
-def delete_value(key: str) -> BaseResponse:
+async def delete_value(key: str) -> BaseResponse:
     deleted = store.delete(key)
     return BaseResponse(success=deleted, message="deleted" if deleted else "not found")
 
 
 @app.get("/exists", response_model=ExistsResponse)
-def exists_value(key: str) -> ExistsResponse:
+async def exists_value(key: str) -> ExistsResponse:
     exists = store.exists(key)
     return ExistsResponse(success=exists, key=key, exists=exists)
 
 
 @app.post("/incr", response_model=IncrResponse)
-def incr_value(request: KeyRequest) -> IncrResponse:
+async def incr_value(request: KeyRequest) -> IncrResponse:
     value = store.incr(request.key)
     return IncrResponse(success=True, key=request.key, value=value, message="ok")
 
 
 @app.patch("/expire", response_model=BaseResponse)
-def expire_value(request: ExpireRequest) -> BaseResponse:
+async def expire_value(request: ExpireRequest) -> BaseResponse:
     updated = store.expire(request.key, request.ttl_seconds)
     return BaseResponse(success=updated, message="ok" if updated else "not found")
 
 
 @app.get("/ttl", response_model=TTLResponse)
-def ttl_value(key: str) -> TTLResponse:
+async def ttl_value(key: str) -> TTLResponse:
     ttl_seconds = store.ttl(key)
     if ttl_seconds is None and not store.exists(key):
         return TTLResponse(success=False, key=key, ttl_seconds=None, found=False, message="not found")
@@ -135,6 +135,6 @@ def ttl_value(key: str) -> TTLResponse:
 
 
 @app.post("/cleanup_expired", response_model=BaseResponse)
-def cleanup_expired_endpoint() -> BaseResponse:
+async def cleanup_expired_endpoint() -> BaseResponse:
     removed = cleanup_expired_once(store)
     return BaseResponse(success=True, message=f"cleaned {removed} expired keys")
