@@ -3,21 +3,24 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 import pytest
 
 
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+
 @pytest.fixture(scope="session")
 def base_url() -> str:
-    # Given: 사용할 수 있는 로컬 포트를 하나 확보한다.
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
 
-    # Given: 테스트 동안 mini redis 서버를 한 번만 실행한다.
     process = subprocess.Popen(
         [
             sys.executable,
@@ -29,12 +32,11 @@ def base_url() -> str:
             "--port",
             str(port),
         ],
-        cwd=Path(__file__).resolve().parent,
+        cwd=PROJECT_DIR,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
 
-    # When: /health 응답이 올 때까지 대기한다.
     deadline = time.time() + 5
     while time.time() < deadline:
         try:
@@ -49,7 +51,6 @@ def base_url() -> str:
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
-        # Then: 테스트 종료 시 서버 프로세스를 정리한다.
         process.terminate()
         try:
             process.wait(timeout=5)
@@ -57,47 +58,63 @@ def base_url() -> str:
             process.kill()
 
 
-def post_json(url: str, path: str, payload: dict) -> dict:
-    # Given: JSON 요청 본문을 만든다.
-    # When: POST 요청을 전송한다.
-    request = urllib.request.Request(
-        f"{url}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+@pytest.fixture
+def unique_key() -> str:
+    return f"test-{uuid.uuid4().hex}"
 
-    # Then: 응답 바디를 JSON으로 파싱해 반환한다.
+
+def request_json(url: str, method: str, path: str, payload: dict | None = None) -> dict:
+    full_url = f"{url}{path}"
+    headers: dict[str, str] = {}
+    data = None
+
+    if payload and method in {"GET", "DELETE"}:
+        query = urllib.parse.urlencode(payload)
+        full_url = f"{full_url}?{query}"
+    elif payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(full_url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(request, timeout=2) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def test_헬스체크_성공(base_url: str) -> None:
-    # Given: 테스트용 서버가 실행되고 있다.
-    # When: HTTP로 /health 엔드포인트를 호출한다.
-    with urllib.request.urlopen(f"{base_url}/health", timeout=2) as response:
-        result = json.loads(response.read().decode("utf-8"))
+def get_json(url: str, path: str, payload: dict | None = None) -> dict:
+    return request_json(url, "GET", path, payload)
 
-    # Then: 성공 응답을 받는다.
+
+def post_json(url: str, path: str, payload: dict | None = None) -> dict:
+    return request_json(url, "POST", path, payload)
+
+
+def patch_json(url: str, path: str, payload: dict) -> dict:
+    return request_json(url, "PATCH", path, payload)
+
+
+def delete_json(url: str, path: str, payload: dict) -> dict:
+    return request_json(url, "DELETE", path, payload)
+
+
+def test_헬스체크_성공(base_url: str) -> None:
+    result = get_json(base_url, "/health")
+
     assert result["success"] is True
     assert result["message"] == "ok"
 
 
-def test_set_조회_삭제_흐름(base_url: str) -> None:
-    # Given: 빈 키 상태에서 시작한다.
-    # When: 실제 HTTP로 set/get/exists/delete를 순차적으로 호출한다.
-    created = post_json(base_url, "/set", {"key": "k", "value": {"a": 1}})
-    got = post_json(base_url, "/get", {"key": "k"})
-    exists = post_json(base_url, "/exists", {"key": "k"})
-    deleted = post_json(base_url, "/delete", {"key": "k"})
-    not_exists = post_json(base_url, "/exists", {"key": "k"})
+def test_set_get_exists_delete_흐름(base_url: str, unique_key: str) -> None:
+    created = post_json(base_url, "/set", {"key": unique_key, "value": {"a": 1}})
+    got = get_json(base_url, "/get", {"key": unique_key})
+    exists = get_json(base_url, "/exists", {"key": unique_key})
+    deleted = delete_json(base_url, "/delete", {"key": unique_key})
+    not_exists = get_json(base_url, "/exists", {"key": unique_key})
 
-    # Then: set/get/exists/delete 흐름이 기대대로 동작한다.
     assert created["success"] is True
 
     assert got["success"] is True
     assert got["found"] is True
-    assert got["key"] == "k"
+    assert got["key"] == unique_key
     assert got["value"] == {"a": 1}
 
     assert exists["success"] is True
@@ -108,3 +125,65 @@ def test_set_조회_삭제_흐름(base_url: str) -> None:
 
     assert not_exists["success"] is False
     assert not_exists["exists"] is False
+
+
+def test_incr가_없는_키에서_시작해_누적된다(base_url: str, unique_key: str) -> None:
+    first = post_json(base_url, "/incr", {"key": unique_key})
+    second = post_json(base_url, "/incr", {"key": unique_key})
+    got = get_json(base_url, "/get", {"key": unique_key})
+
+    assert first["success"] is True
+    assert first["value"] == 1
+
+    assert second["success"] is True
+    assert second["value"] == 2
+
+    assert got["success"] is True
+    assert got["value"] == 2
+
+
+def test_expire와_ttl이_만료를_반영한다(base_url: str, unique_key: str) -> None:
+    created = post_json(base_url, "/set", {"key": unique_key, "value": "value"})
+    expired = patch_json(base_url, "/expire", {"key": unique_key, "ttl_seconds": 1})
+    ttl_before = get_json(base_url, "/ttl", {"key": unique_key})
+
+    time.sleep(1.1)
+
+    ttl_after = get_json(base_url, "/ttl", {"key": unique_key})
+    got_after = get_json(base_url, "/get", {"key": unique_key})
+
+    assert created["success"] is True
+    assert expired["success"] is True
+
+    assert ttl_before["success"] is True
+    assert ttl_before["found"] is True
+    assert ttl_before["ttl_seconds"] is not None
+    assert ttl_before["ttl_seconds"] >= 1
+
+    assert ttl_after["success"] is False
+    assert ttl_after["found"] is False
+    assert ttl_after["ttl_seconds"] is None
+    assert ttl_after["message"] == "not found"
+
+    assert got_after["success"] is False
+    assert got_after["found"] is False
+    assert got_after["value"] is None
+
+
+def test_cleanup_expired가_만료된_키를_정리한다(base_url: str, unique_key: str) -> None:
+    created = post_json(base_url, "/set", {"key": unique_key, "value": "value", "ttl_seconds": 1})
+
+    time.sleep(1.1)
+
+    cleaned = post_json(base_url, "/cleanup_expired")
+    got_after = get_json(base_url, "/get", {"key": unique_key})
+
+    assert created["success"] is True
+
+    assert cleaned["success"] is True
+    assert cleaned["message"] is not None
+    assert cleaned["message"].startswith("cleaned ")
+
+    assert got_after["success"] is False
+    assert got_after["found"] is False
+    assert got_after["message"] == "not found"

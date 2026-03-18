@@ -6,7 +6,7 @@
 
 - `miniredis`: JSON key-value 저장과 set 시 TTL 설정을 지원하는 Mini Redis HTTP API
 - `demo-app`: 비싼 랭킹 계산 조회와 캐시 조회를 비교하는 FastAPI 데모 앱
-- `k6`: `ranking-direct`와 `ranking-cache` 성능 차이를 재현하는 부하 테스트 스크립트
+- `k6`: demo-app 캐시 성능과 MiniRedis 동시성 시나리오를 재현하는 부하 테스트 스크립트
 
 ## 저장소 구조
 
@@ -15,7 +15,10 @@
 ├── README.md
 ├── docker-compose.yml
 ├── k6/
-│   └── basic.js
+│   ├── basic.js
+│   └── miniredis/
+│       ├── incr-concurrency.js
+│       └── rmw-failure.js
 ├── miniredis/
 │   ├── Dockerfile
 │   ├── core.py
@@ -42,7 +45,7 @@
 ### `miniredis`
 
 - 문자열 key와 JSON value를 다루는 Mini Redis HTTP API
-- `set/get/delete/exists` 제공
+- `set/get/delete/exists/incr/expire/ttl/cleanup_expired` 제공
 - `set` 요청의 `ttl_seconds`로 lazy expiration TTL을 설정할 수 있다
 
 ### `demo-app`
@@ -83,7 +86,7 @@
 - 실시간 요청 수, 평균 응답 시간, p95, cache hit/miss 비율을 보여준다.
 - 마지막 `k6` 실행 결과 파일 `demo-app/perf-results/latest.json` 을 읽어 카드와 비교 바 형태로 보여준다.
 - 페이지 안에서 `MiniRedis` 저장/조회/삭제도 직접 시연할 수 있다.
-- `main` 기준 `miniredis`는 남은 TTL 조회 API를 제공하지 않으므로, playground에서는 TTL을 저장 시에만 설정한다.
+- playground에서는 TTL을 저장 시에만 설정하며, 남은 TTL은 별도로 표시하지 않는다.
 
 ## 실행 방법
 
@@ -101,21 +104,21 @@ docker compose up --build
 터미널 1:
 
 ```bash
-cd /Users/yeoduchi/Documents/minimi/miniredis
-./.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8000
+cd miniredis
+uv run uvicorn server:app --host 127.0.0.1 --port 8000
 ```
 
 터미널 2:
 
 ```bash
-cd /Users/yeoduchi/Documents/minimi/demo-app
-MINIREDIS_BASE_URL=http://127.0.0.1:8000 ../miniredis/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8001
+cd demo-app
+uv run uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
 브라우저:
 
 ```bash
-open "http://127.0.0.1:8001"
+http://127.0.0.1:8001
 ```
 
 예시 호출:
@@ -139,6 +142,8 @@ docker compose logs -f demo-app
 ## `k6` 실행 방법
 
 서비스를 띄운 뒤 로컬에서 실행한다.
+
+### demo-app 캐시 시나리오
 
 - `ranking-cache`: 100 VUs로 10초 동안 `GET /ranking-cache`
 - `ranking-direct`: 100 VUs로 10초 동안 `GET /ranking-direct`
@@ -165,6 +170,29 @@ DEMO_APP_BASE_URL=http://localhost:8001 k6 run k6/basic.js
 - `ranking_cache_requests`: 총 요청 수와 초당 처리량(rate)
 - `ranking_direct_failures`: 실패율
 - `ranking_cache_failures`: 실패율
+
+### MiniRedis 동시성 시나리오
+
+- MiniRedis 동시성 검증 스크립트는 `k6/miniredis/` 아래에 둔다.
+- `incr-concurrency.js`는 같은 키에 `POST /incr`를 동시에 보내고 최종 값이 정확히 `VUS * ITERATIONS_PER_VU`인지 확인한다.
+- `rmw-failure.js`는 클라이언트에서 `GET -> +1 -> SET`를 수행해 contention 상황의 lost update를 의도적으로 재현한다.
+- `incr-concurrency.js`의 성공은 현재 단일 프로세스 `uvicorn` 실행 기준에서의 정확한 누적 검증이다.
+- `rmw-failure.js`는 서버 버그를 찾는 테스트가 아니라 비원자적 read-modify-write가 왜 깨지는지 보여주는 재현 시나리오다.
+
+MiniRedis 서버를 띄운 뒤 실행한다.
+
+```bash
+docker build -t miniredis ./miniredis
+docker run --rm -p 8000:8000 miniredis
+```
+
+```bash
+k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_VU=10 k6/miniredis/incr-concurrency.js
+```
+
+```bash
+k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_VU=10 k6/miniredis/rmw-failure.js
+```
 
 ## CRUD 시연
 
@@ -195,9 +223,8 @@ curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
 예시 검증 명령:
 
 ```bash
-python3 -m compileall demo-app k6
-cd /Users/yeoduchi/Documents/minimi/miniredis
-./.venv/bin/python -m pytest tests/test_core.py tests/test_server.py
+cd miniredis
+uv run pytest tests/test_core.py tests/test_server.py
 ```
 
 ## 참고
