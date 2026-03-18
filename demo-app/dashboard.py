@@ -185,7 +185,7 @@ def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, 
         "generated_at": datetime.now(UTC).isoformat(),
         "hero": {
             "eyebrow": "MINI REDIS FASHION DEMO",
-            "title": "랭킹은 그대로, 체감 속도만 빠르게",
+            "title": "랭킹은 그대로,  체감 속도만 빠르게",
             "subtitle": f"지금 1위는 {top['brand']}의 {top['name']}입니다." if top else "상위 상품을 불러오는 중입니다.",
             "chips": ["실시간 비교", "TTL 5초"],
             "featured": top,
@@ -346,7 +346,7 @@ def build_dashboard_html() -> str:
     <section class="hero reveal">
       <div class="panel hero-copy">
         <div class="eyebrow" id="hero-eyebrow">MINI REDIS FASHION DEMO</div>
-        <h1 id="hero-title">랭킹은 그대로, 체감 속도만 빠르게</h1>
+        <h1 id="hero-title">랭킹은 그대로,  체감 속도만 빠르게</h1>
         <p class="hero-sub" id="hero-subtitle">상위 상품을 불러오는 중입니다.</p>
         <div class="chip-row" id="hero-chips"></div>
         <div class="hero-actions">
