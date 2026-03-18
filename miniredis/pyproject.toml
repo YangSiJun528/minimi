@@ -5,10 +5,12 @@ description = "Mini Redis HTTP API scaffold"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
+    "requests>=2.32.0",
     "uvicorn>=0.32.0",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.0",
     "pytest>=8.3.0",
 ]
