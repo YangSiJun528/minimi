@@ -11,13 +11,13 @@ import pytest
 
 @pytest.fixture(scope="session")
 def base_url() -> str:
-    # Given: 사용 가능한 로컬 포트를 하나 확보한다.
+    # Given: an available local port is allocated.
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
 
-    # Given: 테스트 동안 한 번만 mini redis 서버를 실행한다.
+    # Given: mini redis server is started once for the whole test session.
     process = subprocess.Popen(
         [
             sys.executable,
@@ -34,6 +34,7 @@ def base_url() -> str:
         stderr=subprocess.STDOUT,
     )
 
+    # When: wait until /health responds.
     deadline = time.time() + 5
     while time.time() < deadline:
         try:
@@ -56,8 +57,8 @@ def base_url() -> str:
 
 
 def post_json(url: str, path: str, payload: dict) -> dict:
-    # Given: JSON 본문을 준비한다.
-    # When: POST 요청을 보낸다.
+    # Given: a request payload is prepared.
+    # When: it is sent as POST JSON.
     request = urllib.request.Request(
         f"{url}{path}",
         data=json.dumps(payload).encode("utf-8"),
@@ -65,32 +66,32 @@ def post_json(url: str, path: str, payload: dict) -> dict:
         method="POST",
     )
 
-    # Then: 응답 본문을 JSON으로 파싱해 돌려준다.
+    # Then: parse and return response json.
     with urllib.request.urlopen(request, timeout=2) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def test_헬스체크_성공(base_url: str) -> None:
-    # Given: 테스트용 서버가 실행 중이다.
-    # When: HTTP로 /health를 호출한다.
+def test_healthcheck_success(base_url: str) -> None:
+    # Given: the server is running.
+    # When: /health is requested.
     with urllib.request.urlopen(f"{base_url}/health", timeout=2) as response:
         result = json.loads(response.read().decode("utf-8"))
 
-    # Then: 성공 응답을 받는다.
+    # Then: it returns success.
     assert result["success"] is True
     assert result["message"] == "ok"
 
 
-def test_set_조회_삭제_흐름(base_url: str) -> None:
-    # Given: 임시 키가 없는 빈 상태에서 시작한다.
-    # When: HTTP로 set/get/exists/delete를 순차적으로 호출한다.
+def test_set_get_delete_flow(base_url: str) -> None:
+    # Given: start from an empty state for the key.
+    # When: call endpoints for set, get, exists, and delete in order.
     created = post_json(base_url, "/set", {"key": "k", "value": {"a": 1}})
     got = post_json(base_url, "/get", {"key": "k"})
     exists = post_json(base_url, "/exists", {"key": "k"})
     deleted = post_json(base_url, "/delete", {"key": "k"})
     not_exists = post_json(base_url, "/exists", {"key": "k"})
 
-    # Then: set/get/exists/delete가 기대대로 동작한다.
+    # Then: set/get/exists/delete flow behaves as expected.
     assert created["success"] is True
 
     assert got["success"] is True
