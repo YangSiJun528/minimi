@@ -96,38 +96,28 @@ docker compose up --build
 - `miniredis`: `http://localhost:8000`
 - MiniRedis TTL cleanup 주기는 기본 10초이며 `MINIREDIS_CLEANUP_INTERVAL_SECONDS`로 조정할 수 있다
 
+## k6 실행 방법
 
-## `k6` 실행 방법
-
-서비스를 띄운 뒤 로컬에서 실행한다.
+서비스를 띄운 뒤 로컬에서 실행합니다.
 
 ### demo-app 캐시 시나리오
 
 - `ranking-cache`: 100 VUs로 10초 동안 `GET /ranking-cache`
 - `ranking-direct`: 100 VUs로 10초 동안 `GET /ranking-direct`
 
-스크립트는 cache 경로를 먼저 실행하고, 결과 JSON을 `demo-app/perf-results/latest.json` 에 저장한다.
-demo-app 대시보드는 이 파일을 2초마다 다시 읽어 화면에 자동 반영한다.
-이 파일은 실행 산출물이며 기본 커밋 대상에서는 제외한다.
+스크립트 동작:
+
+1. `ranking-cache` 경로를 먼저 실행
+2. 결과 JSON을 `demo-app/perf-results/latest.json`에 저장
+3. demo-app 대시보드는 해당 파일을 2초마다 다시 읽어 자동 반영
+
+> ⚠️ 해당 JSON 파일은 실행 결과물이므로 기본 커밋 대상에서 제외합니다.
+
+### 실행 명령어
 
 ```bash
 k6 run k6/basic.js
 ```
-
-환경 변수를 써서 대상 주소를 바꿀 수도 있다.
-
-```bash
-DEMO_APP_BASE_URL=http://localhost:8001 k6 run k6/basic.js
-```
-
-주요 지표:
-
-- `ranking_direct_duration`: 평균 응답 시간과 `p(95)`
-- `ranking_cache_duration`: 평균 응답 시간과 `p(95)`
-- `ranking_direct_requests`: 총 요청 수와 초당 처리량(rate)
-- `ranking_cache_requests`: 총 요청 수와 초당 처리량(rate)
-- `ranking_direct_failures`: 실패율
-- `ranking_cache_failures`: 실패율
 
 ### MiniRedis 동시성 시나리오
 
@@ -177,32 +167,23 @@ curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
 초기 구현에서 Codex가 생성한 코드에는  
 불필요한 `async/await` 사용이 과도하게 포함되어 있었다.
 
-코드를 분석한 결과:
-
 - 대부분의 로직이 **메모리 기반 연산 (딕셔너리 접근)**
 - I/O 작업이 없기 때문에 비동기의 이점을 활용하지 못함
-- 오히려 코드 복잡도만 증가
-
----
 
 ## 분석
 
-비동기가 필요한 경우는 다음과 같이 제한적이었다:
-
+비동기가 필요한 경우는 :
 - TTL 만료 처리를 위한 **주기적 정리 (active cleanup)**
 
 이 외의 작업은 모두:
-
 - 즉시 실행되는 CPU 연산
 - 동기 방식이 더 적합
 
----
-
 ## 해결
-
 - 불필요한 `async/await` 제거
 - 저장소 로직을 **동기 방식으로 단순화**
 - 필요한 부분(TTL cleanup 등)에만 비동기 또는 주기 작업 적용
+- 
 ## 결과 해석
 
 - `ranking-direct`는 모든 요청이 100~200ms 지연과 1000개 후보 점수 계산을 직접 맞기 때문에 평균 응답 시간과 p95가 높게 나와야 정상이다.
