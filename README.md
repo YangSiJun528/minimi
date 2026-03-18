@@ -185,7 +185,6 @@ k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_
 - 필요한 부분(TTL cleanup 등)에만 비동기 또는 주기 작업 적용
 
 ## 📌 결과 해석
-
 - `ranking-direct`는 매 요청마다 직접 계산을 수행하므로 평균 응답 시간과 p95가 높게 나오는 것이 정상이다.
 - `ranking-cache`는 대부분 캐시 hit이므로 평균 응답 시간과 p95가 더 낮아지는 것이 정상이다.
 - 특히 p95가 낮다는 것은 느린 요청까지 줄었다는 의미이다.
@@ -196,9 +195,10 @@ k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_
 
 
 ## 📌팀원 역할
-- 양시준: 코어, 
+- 양시준: CRUD 코어, 기획
 - 여서진: 데모앱 제작, k6 캐시 성능 테스트
-- 이시원: API 제작, 서버,
+- 이시원: API 제작, 서버, k6 동시성 테스트
+
   
 ## 📌 검증
 
@@ -206,7 +206,7 @@ k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_
 
 ```bash
 cd miniredis
-uv run pytest tests/test_core.py tests/test_server.py
+pytest tests/test_core.py tests/test_server.py
 ```
 
 ## 참고
