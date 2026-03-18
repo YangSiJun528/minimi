@@ -1,4 +1,10 @@
-﻿from fastapi import FastAPI
+import asyncio
+import logging
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
+
+from fastapi import FastAPI
 
 from core import MiniRedisStore
 from protocol import (
@@ -12,8 +18,63 @@ from protocol import (
     TTLResponse,
 )
 
-app = FastAPI(title="Mini Redis")
+DEFAULT_CLEANUP_INTERVAL_SECONDS = 10.0
+logger = logging.getLogger(__name__)
+SleepFn = Callable[[float], Awaitable[None]]
+
 store = MiniRedisStore()
+
+
+def get_cleanup_interval_seconds() -> float:
+    raw_value = os.getenv("MINIREDIS_CLEANUP_INTERVAL_SECONDS")
+    if raw_value is None:
+        return DEFAULT_CLEANUP_INTERVAL_SECONDS
+
+    try:
+        interval_seconds = float(raw_value)
+    except ValueError as exc:
+        raise RuntimeError("MINIREDIS_CLEANUP_INTERVAL_SECONDS must be a positive number") from exc
+
+    if interval_seconds <= 0:
+        raise RuntimeError("MINIREDIS_CLEANUP_INTERVAL_SECONDS must be a positive number")
+
+    return interval_seconds
+
+
+def cleanup_expired_once(target_store: MiniRedisStore) -> int:
+    return target_store.cleanup_expired()
+
+
+async def cleanup_expired_periodically(
+    target_store: MiniRedisStore,
+    interval_seconds: float,
+    sleep_fn: SleepFn = asyncio.sleep,
+) -> None:
+    while True:
+        await sleep_fn(interval_seconds)
+        removed = cleanup_expired_once(target_store)
+        if removed > 0:
+            logger.info("cleaned expired keys removed=%s", removed)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    interval_seconds = get_cleanup_interval_seconds()
+    logger.info("starting ttl cleanup loop interval_seconds=%s", interval_seconds)
+    cleanup_task = asyncio.create_task(
+        cleanup_expired_periodically(store, interval_seconds),
+        name="miniredis-ttl-cleanup",
+    )
+
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
+
+
+app = FastAPI(title="Mini Redis", lifespan=lifespan)
 
 
 @app.get("/health", response_model=BaseResponse)
@@ -74,6 +135,6 @@ async def ttl_value(key: str) -> TTLResponse:
 
 
 @app.post("/cleanup_expired", response_model=BaseResponse)
-async def cleanup_expired() -> BaseResponse:
-    removed = store.cleanup_expired()
+async def cleanup_expired_endpoint() -> BaseResponse:
+    removed = cleanup_expired_once(store)
     return BaseResponse(success=True, message=f"cleaned {removed} expired keys")
