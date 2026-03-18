@@ -1,12 +1,28 @@
 # Minimi
 
 > Minimi is Mini My In-Memory
-
-이 저장소는 두 개의 Python 프로젝트와 `k6` 스크립트를 함께 담고 있다.
-
 - `miniredis`: JSON key-value 저장과 set 시 TTL 설정을 지원하는 Mini Redis HTTP API
-- `demo-app`: 비싼 랭킹 계산 조회와 캐시 조회를 비교하는 FastAPI 데모 앱
+- `demo-app`: 캐시 없는 랭킹 조회와 캐시 조회를 비교하는 FastAPI 데모 앱
 - `k6`: demo-app 캐시 성능과 MiniRedis 동시성 시나리오를 재현하는 부하 테스트 스크립트
+
+# 📌 기술 선택 이유
+### HTTP vs TCP/소켓 → HTTP 선택
+- 성능 테스트 도구(k6 등)와의 **호환성이 높음**
+- 구현 복잡도를 낮추고, 핵심 로직(저장소)에 집중하기 위함
+  
+### k6 vs Locust → k6 선택
+- HTTP 부하 테스트에 최적화
+
+###  pytest 선택 이유
+- Python 환경에서 가장 널리 사용되는 테스트 프레임워크
+- 단위 테스트 작성이 간단하고 가독성이 좋음
+- 테스트 자동화 및 유지보수에 유리
+
+###  4. FastAPI 선택 이유
+- 요청/응답 모델을 통한 **타입 기반 검증**
+- 비동기 지원 구조를 기본 제공
+
+
 
 ## 저장소 구조
 
@@ -40,59 +56,36 @@
     └── uv.lock
 ```
 
-## 프로젝트 역할
+# 📌 프로젝트 역할
 
-### `miniredis`
+## 🔵 MiniRedis
+> 인메모리 기반 Key-Value 저장소 (HTTP API)
+### 주요 기능
+- 문자열 key + JSON value 저장
+- `set / get / delete / exists / incr / expire / ttl` 지원
 
-- 문자열 key와 JSON value를 다루는 Mini Redis HTTP API
-- `set/get/delete/exists/incr/expire/ttl/cleanup_expired` 제공
-- `set` 요청의 `ttl_seconds`로 lazy expiration TTL을 설정할 수 있다
-- 접근이 없는 만료 키도 기본 10초 주기 백그라운드 cleanup으로 수거한다
-- `POST /cleanup_expired`는 수동 수거와 디버깅용으로 유지한다
+### TTL 관리
+- `set` 시 `ttl_seconds`로 만료 시간 설정
+- 요청 시 lazy expiration 처리
+- 백그라운드 cleanup (기본 10초 주기)
 
-### `demo-app`
+## 🟢 Demo App
+> 캐시 성능 비교를 위한 FastAPI 기반 데모 서버
 
-- FastAPI 기반 캐시 데모 앱
-- `demo-app/main.py`가 API와 `MiniRedisClient`를 담당
-- `demo-app/db.py`가 1000개 상품 후보를 읽고 랭킹 점수를 계산하는 느린 DB 시뮬레이션을 담당
-- `demo-app/dashboard.py`가 실시간 메트릭과 k6 결과 시각화를 담당
-- 주요 엔드포인트
-  - `GET /`
-  - `GET /dashboard-data`
-  - `GET /health`
-  - `GET /ranking-direct`
-  - `GET /ranking-cache`
-  - `POST/GET/DELETE /demo-store`
+### 역할 분리
+- `main.py`
+  - API 엔드포인트 + MiniRedis 연동
+- `db.py`
+  - 1000개 상품 기반 **느린 mongodb 시뮬레이션 (100~200ms)**
+- `dashboard.py`
+  - 실시간 메트릭 및 k6 결과 시각화
 
-## 데모 동작
-
-### `GET /ranking-direct`
-
-- 매 요청마다 상품 후보 1000개를 읽는다.
-- 조회수, 좋아요, 위시리스트, 판매량, 리뷰 수, 재구매 지표, 출시 후 경과일을 합쳐 점수를 계산한다.
-- 점수가 높은 순으로 상위 10개를 정렬해 반환한다.
-- `demo-app/db.py`에서 100~200ms 인위적 지연을 준다.
-- 캐시는 사용하지 않는다.
-
-### `GET /ranking-cache`
-
-- 먼저 `miniredis`에서 `ranking:top10` 키를 조회한다.
-- cache hit면 저장된 top 10을 바로 반환한다.
-- cache miss면 `ranking-direct`와 같은 계산을 수행한 뒤 TTL 5초로 저장한다.
-- 동시 miss 때는 demo-app 내부 lock으로 한 번만 재계산해서 캐시 stampede를 줄인다.
-- `demo-app` 로그에서 `cache hit` / `cache miss`를 확인할 수 있다.
-
-### `GET /`
-
-- demo-app 대시보드 페이지다.
-- 실시간 요청 수, 평균 응답 시간, p95, cache hit/miss 비율을 보여준다.
-- 마지막 `k6` 실행 결과 파일 `demo-app/perf-results/latest.json` 을 읽어 카드와 비교 바 형태로 보여준다.
-- 페이지 안에서 `MiniRedis` 저장/조회/삭제도 직접 시연할 수 있다.
-- playground에서는 TTL을 저장 시에만 설정하며, 남은 TTL은 별도로 표시하지 않는다.
-- 접근이 없는 만료 키는 백그라운드 cleanup이 최대 10초 안에 메모리에서 정리한다.
+### 주요 엔드포인트
+- `GET /` → 대시보드
+- `GET /ranking-direct` → 캐시 없이 DB 조회
+- `GET /ranking-cache` → 캐시 적용 조회
 
 ## 실행 방법
-
 ### Docker
 
 ```bash
@@ -103,52 +96,6 @@ docker compose up --build
 - `miniredis`: `http://localhost:8000`
 - MiniRedis TTL cleanup 주기는 기본 10초이며 `MINIREDIS_CLEANUP_INTERVAL_SECONDS`로 조정할 수 있다
 
-### Docker 없이 로컬 실행
-
-터미널 1:
-
-```bash
-cd miniredis
-uv run uvicorn server:app --host 127.0.0.1 --port 8000
-```
-
-필요하면 cleanup 주기를 바꿔 실행할 수 있다.
-
-```bash
-cd miniredis
-MINIREDIS_CLEANUP_INTERVAL_SECONDS=10 uv run uvicorn server:app --host 127.0.0.1 --port 8000
-```
-
-터미널 2:
-
-```bash
-cd demo-app
-uv run uvicorn main:app --host 127.0.0.1 --port 8001
-```
-
-브라우저:
-
-```bash
-http://127.0.0.1:8001
-```
-
-예시 호출:
-
-```bash
-curl "http://127.0.0.1:8001/ranking-direct"
-curl "http://127.0.0.1:8001/ranking-cache"
-curl "http://127.0.0.1:8001/ranking-cache"
-sleep 6
-curl "http://127.0.0.1:8001/ranking-cache"
-```
-
-로그 확인:
-
-```bash
-docker compose logs -f demo-app
-```
-
-또는 로컬 실행 터미널에서 바로 확인한다.
 
 ## `k6` 실행 방법
 
@@ -223,6 +170,39 @@ curl "http://localhost:8001/demo-store?key=demo:manual:ranking"
 curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
 ```
 
+# 📌 문제 발견 및 해결
+
+## 문제 상황
+
+초기 구현에서 Codex가 생성한 코드에는  
+불필요한 `async/await` 사용이 과도하게 포함되어 있었다.
+
+코드를 분석한 결과:
+
+- 대부분의 로직이 **메모리 기반 연산 (딕셔너리 접근)**
+- I/O 작업이 없기 때문에 비동기의 이점을 활용하지 못함
+- 오히려 코드 복잡도만 증가
+
+---
+
+## 분석
+
+비동기가 필요한 경우는 다음과 같이 제한적이었다:
+
+- TTL 만료 처리를 위한 **주기적 정리 (active cleanup)**
+
+이 외의 작업은 모두:
+
+- 즉시 실행되는 CPU 연산
+- 동기 방식이 더 적합
+
+---
+
+## 해결
+
+- 불필요한 `async/await` 제거
+- 저장소 로직을 **동기 방식으로 단순화**
+- 필요한 부분(TTL cleanup 등)에만 비동기 또는 주기 작업 적용
 ## 결과 해석
 
 - `ranking-direct`는 모든 요청이 100~200ms 지연과 1000개 후보 점수 계산을 직접 맞기 때문에 평균 응답 시간과 p95가 높게 나와야 정상이다.
