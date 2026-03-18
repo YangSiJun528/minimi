@@ -1,0 +1,26 @@
+services:
+  miniredis:
+    build:
+      context: ./miniredis
+    container_name: miniredis
+    ports:
+      - "8000:8000"
+
+  mongodb:
+    image: mongo:7
+    container_name: demo-mongodb
+    ports:
+      - "27017:27017"
+
+  demo-app:
+    build:
+      context: ./demo-app
+    container_name: demo-app
+    depends_on:
+      - mongodb
+      - miniredis
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/demoapp
+      MINIREDIS_BASE_URL: http://miniredis:8000
+    ports:
+      - "8001:8001"

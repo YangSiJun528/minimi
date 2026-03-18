@@ -1,0 +1,14 @@
+[project]
+name = "miniredis"
+version = "0.1.0"
+description = "Mini Redis HTTP API scaffold"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]

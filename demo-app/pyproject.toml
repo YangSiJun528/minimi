@@ -1,0 +1,16 @@
+[project]
+name = "demo-app"
+version = "0.1.0"
+description = "Demo FastAPI scaffold"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "httpx>=0.28.0", # 이거는 바꾸셔도 됨.
+    "pymongo>=4.10.0",
+    "uvicorn>=0.32.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
