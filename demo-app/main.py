@@ -115,6 +115,14 @@ class MiniRedisClient:
             raise RuntimeError(f"miniredis GET {path} failed") from exc
         return response.json()
 
+    def _delete(self, path: str) -> dict[str, Any]:
+        try:
+            response = self._client.delete(path)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"miniredis DELETE {path} failed") from exc
+        return response.json()
+
     def _post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             response = self._client.post(path, json=payload or {})
@@ -203,7 +211,7 @@ def dashboard_data() -> dict[str, Any]:
     return build_dashboard_payload(
         metrics_store=metrics_store,
         report_path=REPORT_PATH,
-        ranking_preview=mongo_gateway.preview_ranking(limit=5),
+        ranking_preview=mongo_gateway.preview_ranking(limit=10),
     )
 
 
