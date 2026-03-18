@@ -112,7 +112,7 @@ def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, 
         "generated_at": datetime.now(UTC).isoformat(),
         "hero": {
             "eyebrow": "MINI REDIS FASHION DEMO",
-            "title": "랭킹은 그대로, \n체감 속도만 빠르게",
+            "title": "랭킹은 그대로, 체감 속도만 빠르게",
             "subtitle": f"지금 1위는 {top['brand']}의 {top['name']}입니다." if top else "상위 상품을 불러오는 중입니다.",
             "chips": ["실시간 비교", "TTL 5초"],
             "featured": top,
@@ -384,7 +384,7 @@ def build_dashboard_html() -> str:
       const hero = data.hero || {}
       const featured = hero.featured || {}
       setText("hero-eyebrow", hero.eyebrow || "MINI REDIS FASHION DEMO")
-      setText("hero-title", hero.title || "랭킹은 그대로, \n체감 속도만 빠르게")
+      setText("hero-title", hero.title || "랭킹은 그대로, 체감 속도만 빠르게")
       setText("hero-subtitle", hero.subtitle || "상위 상품을 불러오는 중입니다.")
       setText("featured-name", featured.name || "대표 상품")
       setText("featured-copy", featured.name ? `${featured.brand} / ${fmtPrice(featured.price_krw)} / 전환율 ${fmtPct(featured.conversion_pct)}` : "데이터를 불러오는 중입니다.")
