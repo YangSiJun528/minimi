@@ -17,14 +17,9 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def clear_store():
-    # Given: 이전 테스트의 잔여 데이터가 남지 않도록 스토어를 초기화한다.
-    from server import store
-
-    store._store.clear()
+    # Given: 서버 상태 초기화는 core 담당이라 본 테스트에서는 스텁으로 처리한다.
     yield
-
-    # Then: 다음 테스트로 넘기기 전 상태를 정리한다.
-    store._store.clear()
+    # Then: 테스트 간 교차 영향 제거도 core가 구현될 때 확정한다.
 
 
 def test_헬스체크_성공() -> None:

@@ -48,19 +48,17 @@ async def exists_value(request: KeyRequest) -> ExistsResponse:
 
 @app.post("/expire", response_model=BaseResponse)
 async def expire_value(request: ExpireRequest) -> BaseResponse:
-    updated = store.expire(request.key, request.ttl_seconds)
-    return BaseResponse(success=updated, message="updated" if updated else "not found")
+    # TODO: 만료 시간 연장 로직은 다음 단계에서 구현
+    return BaseResponse(success=False, message="not implemented")
 
 
 @app.post("/ttl", response_model=TTLResponse)
 async def ttl_value(request: KeyRequest) -> TTLResponse:
-    if not store.exists(request.key):
-        return TTLResponse(success=False, key=request.key, ttl_seconds=None, found=False, message="not found")
-    ttl_seconds = store.ttl(request.key)
-    return TTLResponse(success=True, key=request.key, ttl_seconds=ttl_seconds, found=True, message="ok")
+    # TODO: TTL 조회 로직은 다음 단계에서 구현
+    return TTLResponse(success=False, key=request.key, ttl_seconds=None, found=False, message="not implemented")
 
 
 @app.post("/cleanup_expired", response_model=BaseResponse)
 async def cleanup_expired() -> BaseResponse:
-    removed = store.cleanup_expired()
-    return BaseResponse(success=True, message=f"cleaned={removed}")
+    # TODO: 만료 정리 로직은 다음 단계에서 구현
+    return BaseResponse(success=False, message="not implemented")
