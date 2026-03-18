@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 
 from protocol import JSONValue
@@ -15,8 +16,8 @@ class MiniRedisStore:
 
     def _is_expired(self, key: str) -> bool:
         if key in self._expires and time.monotonic() >= self._expires[key]:
-            del self._data[key]
-            del self._expires[key]
+            self._data.pop(key, None)
+            self._expires.pop(key, None)
             return True
         return False
 
@@ -48,13 +49,29 @@ class MiniRedisStore:
             return False
         return True
 
-    # TODO: 시간 남으면 하기
-    # def expire(self, key: str, ttl_seconds: int) -> bool:
-    #     """기존 키에 TTL을 설정하거나 갱신한다."""
-    #     pass
-    #
-    # def ttl(self, key: str) -> int | None:
-    #     pass
-    #
-    # def cleanup_expired(self) -> int:
-    #     pass
+    def expire(self, key: str, ttl_seconds: int) -> bool:
+        """기존 키에 TTL을 설정하거나 갱신한다."""
+        if key not in self._data or self._is_expired(key):
+            return False
+        self._expires[key] = time.monotonic() + ttl_seconds
+        return True
+
+    def ttl(self, key: str) -> int | None:
+        """키가 존재하고 TTL이 있으면 남은 초를 반환한다."""
+        if key not in self._data or self._is_expired(key):
+            return None
+
+        expire_at = self._expires.get(key)
+        if expire_at is None:
+            return None
+
+        remaining = expire_at - time.monotonic()
+        return max(math.ceil(remaining), 0)
+
+    def cleanup_expired(self) -> int:
+        """만료된 키를 일괄 정리하고 제거 개수를 반환한다."""
+        removed_count = 0
+        for key in list(self._expires.keys()):
+            if self._is_expired(key):
+                removed_count += 1
+        return removed_count

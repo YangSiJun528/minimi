@@ -18,7 +18,7 @@ class BaseResponse(BaseModel):
 class SetRequest(BaseModel):
     key: str = Field(..., min_length=1)
     value: JSONValue
-    ttl_seconds: int | None = Field(default=None, ge=1)
+    ttl_seconds: int | None = Field(default=None, ge=0)
 
 
 class KeyRequest(BaseModel):
@@ -27,7 +27,7 @@ class KeyRequest(BaseModel):
 
 class ExpireRequest(BaseModel):
     key: str = Field(..., min_length=1)
-    ttl_seconds: int = Field(..., ge=1)
+    ttl_seconds: int = Field(..., ge=0)
 
 
 class GetResponse(BaseResponse):
@@ -45,3 +45,7 @@ class TTLResponse(BaseResponse):
 class ExistsResponse(BaseResponse):
     key: str
     exists: bool
+
+
+class CleanupExpiredResponse(BaseResponse):
+    removed_count: int

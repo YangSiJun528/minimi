@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-03-18T10:54:27.479Z",
+  "scenario": {
+    "title": "Fashion Ranking Cache Demo",
+    "catalog_size": 1000,
+    "top_n": 10,
+    "viewers": 100,
+    "duration_seconds": 10,
+    "ttl_seconds": 5,
+    "cache_key": "ranking:top10"
+  },
+  "endpoints": {
+    "ranking_direct": {
+      "label": "Ranking Direct",
+      "url": "http://localhost:8001/ranking-direct",
+      "avg_ms": 2006.63,
+      "p95_ms": 3307.94,
+      "request_count": 448,
+      "rps": 20.15,
+      "fail_rate": 0
+    },
+    "ranking_cache": {
+      "label": "Ranking Cache",
+      "url": "http://localhost:8001/ranking-cache",
+      "avg_ms": 136.46,
+      "p95_ms": 177.71,
+      "request_count": 7277,
+      "rps": 327.33,
+      "fail_rate": 0
+    }
+  },
+  "comparison": {
+    "avg_latency_improvement_pct": 93.2,
+    "p95_latency_improvement_pct": 94.63,
+    "rps_gain_pct": 1524.47
+  }
+}

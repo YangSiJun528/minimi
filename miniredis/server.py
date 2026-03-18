@@ -1,8 +1,9 @@
-﻿from fastapi import FastAPI
+from fastapi import FastAPI
 
 from core import MiniRedisStore
 from protocol import (
     BaseResponse,
+    CleanupExpiredResponse,
     ExistsResponse,
     ExpireRequest,
     GetResponse,
@@ -46,19 +47,26 @@ async def exists_value(request: KeyRequest) -> ExistsResponse:
     return ExistsResponse(success=exists, key=request.key, exists=exists)
 
 
-# @app.post("/expire", response_model=BaseResponse)
-# async def expire_value(request: ExpireRequest) -> BaseResponse:
-#     # TODO: expire 기능은 다음 단계에서 구현한다.
-#     pass
+@app.post("/expire", response_model=BaseResponse)
+async def expire_value(request: ExpireRequest) -> BaseResponse:
+    updated = store.expire(request.key, request.ttl_seconds)
+    return BaseResponse(success=updated, message="ok" if updated else "not found")
 
 
-# @app.post("/ttl", response_model=TTLResponse)
-# async def ttl_value(request: KeyRequest) -> TTLResponse:
-#     # TODO: ttl 기능은 다음 단계에서 구현한다.
-#     pass
+@app.post("/ttl", response_model=TTLResponse)
+async def ttl_value(request: KeyRequest) -> TTLResponse:
+    ttl_seconds = store.ttl(request.key)
+    found = store.exists(request.key)
+    return TTLResponse(
+        success=found,
+        key=request.key,
+        ttl_seconds=ttl_seconds,
+        found=found,
+        message="ok" if found else "not found",
+    )
 
 
-# @app.post("/cleanup_expired", response_model=BaseResponse)
-# async def cleanup_expired() -> BaseResponse:
-#     # TODO: cleanup_expired 기능은 다음 단계에서 구현한다.
-#     pass
+@app.post("/cleanup_expired", response_model=CleanupExpiredResponse)
+async def cleanup_expired() -> CleanupExpiredResponse:
+    removed_count = store.cleanup_expired()
+    return CleanupExpiredResponse(success=True, message="ok", removed_count=removed_count)
