@@ -119,6 +119,23 @@ docker compose up --build
 k6 run k6/basic.js
 ```
 
+## CRUD 시연
+
+대시보드의 `MiniRedis Playground` 섹션에서 직접 저장/조회/삭제할 수 있다.
+TTL은 저장 시에만 설정하며, 조회 응답에서 남은 TTL은 보여주지 않는다.
+수동 수거가 필요하면 `POST /cleanup_expired`를 호출할 수 있다.
+
+API로 직접 확인하려면:
+
+```bash
+curl -X POST http://localhost:8001/demo-store \
+  -H "Content-Type: application/json" \
+  -d '{"key":"demo:manual:ranking","value":{"feature":"manual demo","catalog_size":1000,"top_n":10},"ttl_seconds":30}'
+
+curl "http://localhost:8001/demo-store?key=demo:manual:ranking"
+
+curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
+```
 ### MiniRedis 동시성 시나리오
 
 - MiniRedis 동시성 검증 스크립트는 `k6/miniredis/` 아래에 둔다.
@@ -142,23 +159,6 @@ k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_
 k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_VU=10 k6/miniredis/rmw-failure.js
 ```
 
-## CRUD 시연
-
-대시보드의 `MiniRedis Playground` 섹션에서 직접 저장/조회/삭제할 수 있다.
-TTL은 저장 시에만 설정하며, 조회 응답에서 남은 TTL은 보여주지 않는다.
-수동 수거가 필요하면 `POST /cleanup_expired`를 호출할 수 있다.
-
-API로 직접 확인하려면:
-
-```bash
-curl -X POST http://localhost:8001/demo-store \
-  -H "Content-Type: application/json" \
-  -d '{"key":"demo:manual:ranking","value":{"feature":"manual demo","catalog_size":1000,"top_n":10},"ttl_seconds":30}'
-
-curl "http://localhost:8001/demo-store?key=demo:manual:ranking"
-
-curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
-```
 
 # 📌 문제 발견 및 해결
 
@@ -183,14 +183,23 @@ curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
 - 불필요한 `async/await` 제거
 - 저장소 로직을 **동기 방식으로 단순화**
 - 필요한 부분(TTL cleanup 등)에만 비동기 또는 주기 작업 적용
-- 
+
 ## 📌 결과 해석
 
-- `ranking-direct`는 모든 요청이 100~200ms 지연과 1000개 후보 점수 계산을 직접 맞기 때문에 평균 응답 시간과 p95가 높게 나와야 정상이다.
-- `ranking-cache`는 초반 miss와 TTL 만료 구간 일부 요청만 느리고, 대부분은 hit이므로 평균 응답 시간과 p95가 더 낮아져야 정상이다.
-- `ranking_cache_requests`의 rate가 `ranking_direct_requests`보다 높으면 같은 시간에 더 많은 요청을 처리했다는 뜻이다.
-- 실패율이 0에 가깝고 latency 차이가 뚜렷하면 캐시 효과가 잘 재현된 것이다.
+- `ranking-direct`는 매 요청마다 직접 계산을 수행하므로 평균 응답 시간과 p95가 높게 나오는 것이 정상이다.
+- `ranking-cache`는 대부분 캐시 hit이므로 평균 응답 시간과 p95가 더 낮아지는 것이 정상이다.
+- 특히 p95가 낮다는 것은 느린 요청까지 줄었다는 의미이다.
+- `ranking_cache_requests`의 rate가 더 높다면 동일 시간 동안 더 많은 요청을 처리한 것으로, 캐시로 인해 처리량이 증가한 것이다.
+- 실패율이 0에 가깝고 latency 차이가 뚜렷하면 캐시 효과가 잘 나타난 것이다.
+- expected와 actual이 같으면 안정적으로 유지되면 서버가 동시 요청을 정상적으로 처리하고 있는 것이다.
+- `success: true`는 저장/조회/삭제 기능이 정상 동작했음을 의미한다.
 
+
+## 📌팀원 역할
+- 양시준: 코어, 
+- 여서진: 데모앱 제작, k6 캐시 성능 테스트
+- 이시원: API 제작, 서버,
+  
 ## 📌 검증
 
 예시 검증 명령:
