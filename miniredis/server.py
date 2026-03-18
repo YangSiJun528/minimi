@@ -6,7 +6,6 @@ from protocol import (
     ExistsResponse,
     ExpireRequest,
     GetResponse,
-    KeyRequest,
     SetRequest,
     TTLResponse,
 )
@@ -26,24 +25,24 @@ async def set_value(request: SetRequest) -> BaseResponse:
     return BaseResponse(success=True, message="ok")
 
 
-@app.post("/get", response_model=GetResponse)
-async def get_value(request: KeyRequest) -> GetResponse:
-    if not store.exists(request.key):
-        return GetResponse(success=False, key=request.key, value=None, found=False, message="not found")
-    value = store.get(request.key)
-    return GetResponse(success=True, key=request.key, value=value, found=True, message="ok")
+@app.get("/get", response_model=GetResponse)
+async def get_value(key: str) -> GetResponse:
+    if not store.exists(key):
+        return GetResponse(success=False, key=key, value=None, found=False, message="not found")
+    value = store.get(key)
+    return GetResponse(success=True, key=key, value=value, found=True, message="ok")
 
 
-@app.post("/delete", response_model=BaseResponse)
-async def delete_value(request: KeyRequest) -> BaseResponse:
-    deleted = store.delete(request.key)
+@app.delete("/delete", response_model=BaseResponse)
+async def delete_value(key: str) -> BaseResponse:
+    deleted = store.delete(key)
     return BaseResponse(success=deleted, message="deleted" if deleted else "not found")
 
 
-@app.post("/exists", response_model=ExistsResponse)
-async def exists_value(request: KeyRequest) -> ExistsResponse:
-    exists = store.exists(request.key)
-    return ExistsResponse(success=exists, key=request.key, exists=exists)
+@app.get("/exists", response_model=ExistsResponse)
+async def exists_value(key: str) -> ExistsResponse:
+    exists = store.exists(key)
+    return ExistsResponse(success=exists, key=key, exists=exists)
 
 
 # @app.post("/expire", response_model=BaseResponse)
