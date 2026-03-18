@@ -54,6 +54,7 @@ class EndpointMetrics:
     def snapshot(self) -> dict[str, Any]:
         avg = mean(self.recent_durations_ms) if self.recent_durations_ms else None
         p95 = None
+        last_request_at = self.recent_timestamps_ms[-1] if self.recent_timestamps_ms else None
         if self.recent_durations_ms:
             ordered = sorted(self.recent_durations_ms)
             index = max(0, min(len(ordered) - 1, ceil(len(ordered) * 0.95) - 1))
@@ -69,6 +70,8 @@ class EndpointMetrics:
             "total_requests": self.total_requests,
             "success_count": self.success_count,
             "failure_count": self.failure_count,
+            "recent_sample_count": len(self.recent_durations_ms),
+            "last_request_at_ms": None if last_request_at is None else round(last_request_at, 2),
             "avg_duration_ms": None if avg is None else round(avg, 2),
             "p95_duration_ms": None if p95 is None else round(p95, 2),
             "recent_rps": None if rps is None else round(rps, 2),
@@ -121,19 +124,20 @@ def _decorate_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _improvement_pct(direct_value: float | None, cache_value: float | None) -> float | None:
     if direct_value in (None, 0) or cache_value is None:
         return None
-    return round(((direct_value - cache_value) / direct_value) * 100, 2)
+    return round(max(0.0, ((direct_value - cache_value) / direct_value) * 100), 2)
 
 
 def _gain_pct(direct_value: float | None, cache_value: float | None) -> float | None:
     if direct_value in (None, 0) or cache_value is None:
         return None
-    return round(((cache_value - direct_value) / direct_value) * 100, 2)
+    return round(max(0.0, ((cache_value - direct_value) / direct_value) * 100), 2)
 
 
 def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, ranking_preview: dict[str, Any]) -> dict[str, Any]:
     metrics = metrics_store.snapshot()
     live_direct = metrics["ranking_direct"]
     live_cache = metrics["ranking_cache"]
+    now_ms = datetime.now(UTC).timestamp() * 1000
     products = _decorate_products(ranking_preview.get("top_products", []))
     top = products[0] if products else None
     report = _read_report(report_path)
@@ -141,7 +145,20 @@ def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, 
     endpoints = report.get("endpoints", {}) if report else {}
     direct = endpoints.get("ranking_direct", {})
     cache = endpoints.get("ranking_cache", {})
-    has_live_compare = bool(live_direct.get("total_requests")) and bool(live_cache.get("total_requests"))
+    direct_fresh = (
+        live_direct.get("last_request_at_ms") is not None
+        and now_ms - float(live_direct["last_request_at_ms"]) <= 6000
+    )
+    cache_fresh = (
+        live_cache.get("last_request_at_ms") is not None
+        and now_ms - float(live_cache["last_request_at_ms"]) <= 6000
+    )
+    has_live_compare = (
+        live_direct.get("recent_sample_count", 0) >= 5
+        and live_cache.get("recent_sample_count", 0) >= 5
+        and direct_fresh
+        and cache_fresh
+    )
 
     compare_avg_direct = live_direct.get("avg_duration_ms") if has_live_compare else direct.get("avg_ms")
     compare_avg_cache = live_cache.get("avg_duration_ms") if has_live_compare else cache.get("avg_ms")
@@ -566,7 +583,7 @@ def build_dashboard_html() -> str:
       if(dashboardPollHandle !== null) return
       dashboardPollHandle = window.setInterval(()=>{
         if(!document.hidden) loadDashboard(true)
-      }, 2000)
+      }, 1000)
       document.addEventListener("visibilitychange", ()=>{
         if(!document.hidden) loadDashboard(true)
       })
