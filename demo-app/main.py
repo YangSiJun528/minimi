@@ -71,7 +71,7 @@ class RankingResponse(BaseModel):
 class CachePlaygroundRequest(BaseModel):
     key: str
     value: Any
-    ttl_seconds: int | None = Field(default=None, ge=0)
+    ttl_seconds: int | None = Field(default=None, ge=1)
 
 
 class CachePlaygroundResponse(BaseModel):
@@ -141,23 +141,9 @@ class MiniRedisClient:
         payload = self._post("/delete", {"key": key})
         return bool(payload.get("success", False))
 
-    def expire(self, key: str, ttl_seconds: int) -> bool:
-        payload = self._post("/expire", {"key": key, "ttl_seconds": ttl_seconds})
-        return bool(payload.get("success", False))
-
-    def ttl(self, key: str) -> int | None:
-        payload = self._post("/ttl", {"key": key})
-        if not payload.get("found", False):
-            return None
-        return payload.get("ttl_seconds")
-
     def exists(self, key: str) -> bool:
         payload = self._post("/exists", {"key": key})
         return bool(payload.get("exists", False))
-
-    def cleanup_expired(self) -> int:
-        payload = self._post("/cleanup_expired")
-        return int(payload.get("removed_count", 0))
 
     def close(self) -> None:
         self._client.close()
@@ -350,7 +336,6 @@ def read_demo_store_item(key: str = Query(..., min_length=1)) -> CachePlayground
     try:
         exists = miniredis_client.exists(key)
         value = miniredis_client.get(key) if exists else None
-        ttl_seconds = miniredis_client.ttl(key) if exists else None
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=f"cache read failed: {exc}") from exc
 
@@ -361,7 +346,7 @@ def read_demo_store_item(key: str = Query(..., min_length=1)) -> CachePlayground
         key=key,
         exists=exists,
         value=value,
-        ttl_seconds=ttl_seconds,
+        ttl_seconds=None,
         message="found" if exists else "not found",
     )
 

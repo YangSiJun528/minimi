@@ -4,7 +4,7 @@
 
 이 저장소는 두 개의 Python 프로젝트와 `k6` 스크립트를 함께 담고 있다.
 
-- `miniredis`: JSON key-value와 TTL을 지원하는 Mini Redis HTTP API
+- `miniredis`: JSON key-value 저장과 set 시 TTL 설정을 지원하는 Mini Redis HTTP API
 - `demo-app`: 비싼 랭킹 계산 조회와 캐시 조회를 비교하는 FastAPI 데모 앱
 - `k6`: `ranking-direct`와 `ranking-cache` 성능 차이를 재현하는 부하 테스트 스크립트
 
@@ -42,8 +42,8 @@
 ### `miniredis`
 
 - 문자열 key와 JSON value를 다루는 Mini Redis HTTP API
-- `set/get/delete/exists/expire/ttl/cleanup_expired` 제공
-- `miniredis/core.py`에서 lazy expiration 기반 TTL 관리
+- `set/get/delete/exists` 제공
+- `set` 요청의 `ttl_seconds`로 lazy expiration TTL을 설정할 수 있다
 
 ### `demo-app`
 
@@ -83,6 +83,7 @@
 - 실시간 요청 수, 평균 응답 시간, p95, cache hit/miss 비율을 보여준다.
 - 마지막 `k6` 실행 결과 파일 `demo-app/perf-results/latest.json` 을 읽어 카드와 비교 바 형태로 보여준다.
 - 페이지 안에서 `MiniRedis` 저장/조회/삭제도 직접 시연할 수 있다.
+- `main` 기준 `miniredis`는 남은 TTL 조회 API를 제공하지 않으므로, playground에서는 TTL을 저장 시에만 설정한다.
 
 ## 실행 방법
 
@@ -144,6 +145,7 @@ docker compose logs -f demo-app
 
 스크립트는 cache 경로를 먼저 실행하고, 결과 JSON을 `demo-app/perf-results/latest.json` 에 저장한다.
 demo-app 대시보드는 이 파일을 2초마다 다시 읽어 화면에 자동 반영한다.
+이 파일은 실행 산출물이며 기본 커밋 대상에서는 제외한다.
 
 ```bash
 k6 run k6/basic.js
@@ -167,6 +169,7 @@ DEMO_APP_BASE_URL=http://localhost:8001 k6 run k6/basic.js
 ## CRUD 시연
 
 대시보드의 `MiniRedis Playground` 섹션에서 직접 저장/조회/삭제할 수 있다.
+TTL은 저장 시에만 설정하며, 조회 응답에서 남은 TTL은 보여주지 않는다.
 
 API로 직접 확인하려면:
 

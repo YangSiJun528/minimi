@@ -203,6 +203,9 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Demo artifacts
+demo-app/perf-results/latest.json
+
 # IPython
 profile_default/
 ipython_config.py

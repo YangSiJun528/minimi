@@ -29,7 +29,7 @@ def base_url() -> str:
             "--port",
             str(port),
         ],
-        cwd=Path(__file__).resolve().parent.parent,
+        cwd=Path(__file__).resolve().parent,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
@@ -108,33 +108,3 @@ def test_set_조회_삭제_흐름(base_url: str) -> None:
 
     assert not_exists["success"] is False
     assert not_exists["exists"] is False
-
-
-def test_expire_ttl_cleanup_흐름(base_url: str) -> None:
-    # Given: ttl 관련 엔드포인트를 검증할 독립 키를 준비한다.
-    created = post_json(base_url, "/set", {"key": "ttl-key", "value": {"id": 1}})
-    expired = post_json(base_url, "/expire", {"key": "ttl-key", "ttl_seconds": 2})
-    ttl = post_json(base_url, "/ttl", {"key": "ttl-key"})
-
-    # When: 즉시 만료 키를 정리한다.
-    stale = post_json(base_url, "/set", {"key": "stale-key", "value": "gone", "ttl_seconds": 0})
-    cleaned = post_json(base_url, "/cleanup_expired", {})
-    stale_after_cleanup = post_json(base_url, "/get", {"key": "stale-key"})
-
-    # Then
-    assert created["success"] is True
-
-    assert expired["success"] is True
-    assert expired["message"] == "ok"
-
-    assert ttl["success"] is True
-    assert ttl["found"] is True
-    assert 1 <= ttl["ttl_seconds"] <= 2
-
-    assert stale["success"] is True
-
-    assert cleaned["success"] is True
-    assert cleaned["removed_count"] == 1
-
-    assert stale_after_cleanup["success"] is False
-    assert stale_after_cleanup["found"] is False

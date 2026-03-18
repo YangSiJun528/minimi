@@ -289,50 +289,6 @@ class TestTTL:
             assert "k" not in store._data
             assert "k" not in store._expires
 
-    def test_expire로_기존_키의_TTL을_설정할_수_있다(self, store: MiniRedisStore) -> None:
-        # Given
-        base = 1000.0
-        with patch("core.time") as mock_time:
-            mock_time.monotonic.return_value = base
-            store.set("k", "v")
-
-            # When
-            result = store.expire("k", 5)
-
-            # Then
-            assert result is True
-            assert store._expires["k"] == base + 5
-
-    def test_ttl은_남은_초를_올림해서_반환한다(self, store: MiniRedisStore) -> None:
-        # Given
-        base = 1000.0
-        with patch("core.time") as mock_time:
-            mock_time.monotonic.return_value = base
-            store.set("k", "v", ttl_seconds=5)
-
-            # When
-            mock_time.monotonic.return_value = base + 4.2
-
-            # Then
-            assert store.ttl("k") == 1
-
-    def test_cleanup_expired는_만료된_키만_정리한다(self, store: MiniRedisStore) -> None:
-        # Given
-        base = 1000.0
-        with patch("core.time") as mock_time:
-            mock_time.monotonic.return_value = base
-            store.set("expired", "v", ttl_seconds=1)
-            store.set("alive", "v", ttl_seconds=10)
-
-            # When
-            mock_time.monotonic.return_value = base + 2
-            removed_count = store.cleanup_expired()
-
-            # Then
-            assert removed_count == 1
-            assert store.exists("expired") is False
-            assert store.exists("alive") is True
-
 
 # ===========================================================================
 # DELETE

@@ -610,7 +610,7 @@ def build_dashboard_html() -> str:
 
         <article class="panel full">
           <h2>MiniRedis Playground</h2>
-          <p>랭킹 캐시와 별개로 저장, 조회, 삭제를 직접 시연할 수 있습니다.</p>
+          <p>랭킹 캐시와 별개로 저장, 조회, 삭제를 직접 시연할 수 있습니다. TTL은 저장 시에만 설정하고, 남은 TTL 조회는 지원하지 않습니다.</p>
           <div class="playground">
             <div class="field-group">
               <label>
@@ -618,8 +618,8 @@ def build_dashboard_html() -> str:
                 <input id="store-key" type="text" value="demo:manual:ranking" />
               </label>
               <label>
-                TTL Seconds
-                <input id="store-ttl" type="number" min="0" value="30" />
+                TTL Seconds (저장 전용)
+                <input id="store-ttl" type="number" min="1" value="30" />
               </label>
               <label>
                 JSON Value
@@ -638,7 +638,7 @@ def build_dashboard_html() -> str:
             </div>
             <pre id="playground-output">playground result will appear here</pre>
           </div>
-          <p class="footnote">결과 파일 경로: <span id="report-path"></span></p>
+          <p class="footnote">k6 결과 파일 경로: <span id="report-path"></span></p>
         </article>
       </section>
     </main>
