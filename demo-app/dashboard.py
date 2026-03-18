@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from math import ceil
 from statistics import mean
 from threading import Lock
 from typing import Any, Literal
@@ -33,11 +34,14 @@ class EndpointMetrics:
     cache_hit_count: int = 0
     cache_miss_count: int = 0
     recent_durations_ms: deque[float] = field(default_factory=lambda: deque(maxlen=40))
+    recent_timestamps_ms: deque[float] = field(default_factory=lambda: deque(maxlen=40))
 
     def record(self, duration_ms: float, success: bool, cache_status: CacheStatus | None = None) -> None:
+        now_ms = datetime.now(UTC).timestamp() * 1000
         self.total_requests += 1
         self.last_duration_ms = duration_ms
         self.recent_durations_ms.append(duration_ms)
+        self.recent_timestamps_ms.append(now_ms)
         if success:
             self.success_count += 1
         else:
@@ -49,10 +53,25 @@ class EndpointMetrics:
 
     def snapshot(self) -> dict[str, Any]:
         avg = mean(self.recent_durations_ms) if self.recent_durations_ms else None
+        p95 = None
+        if self.recent_durations_ms:
+            ordered = sorted(self.recent_durations_ms)
+            index = max(0, min(len(ordered) - 1, ceil(len(ordered) * 0.95) - 1))
+            p95 = ordered[index]
         total_cache = self.cache_hit_count + self.cache_miss_count
         hit_rate = (self.cache_hit_count / total_cache * 100) if total_cache else None
+        rps = None
+        if len(self.recent_timestamps_ms) >= 2:
+            window_ms = self.recent_timestamps_ms[-1] - self.recent_timestamps_ms[0]
+            if window_ms > 0:
+                rps = len(self.recent_timestamps_ms) / (window_ms / 1000)
         return {
+            "total_requests": self.total_requests,
+            "success_count": self.success_count,
+            "failure_count": self.failure_count,
             "avg_duration_ms": None if avg is None else round(avg, 2),
+            "p95_duration_ms": None if p95 is None else round(p95, 2),
+            "recent_rps": None if rps is None else round(rps, 2),
             "cache_hit_count": self.cache_hit_count,
             "cache_miss_count": self.cache_miss_count,
             "cache_hit_rate_pct": None if hit_rate is None else round(hit_rate, 1),
@@ -99,8 +118,22 @@ def _decorate_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _improvement_pct(direct_value: float | None, cache_value: float | None) -> float | None:
+    if direct_value in (None, 0) or cache_value is None:
+        return None
+    return round(((direct_value - cache_value) / direct_value) * 100, 2)
+
+
+def _gain_pct(direct_value: float | None, cache_value: float | None) -> float | None:
+    if direct_value in (None, 0) or cache_value is None:
+        return None
+    return round(((cache_value - direct_value) / direct_value) * 100, 2)
+
+
 def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, ranking_preview: dict[str, Any]) -> dict[str, Any]:
     metrics = metrics_store.snapshot()
+    live_direct = metrics["ranking_direct"]
+    live_cache = metrics["ranking_cache"]
     products = _decorate_products(ranking_preview.get("top_products", []))
     top = products[0] if products else None
     report = _read_report(report_path)
@@ -108,6 +141,32 @@ def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, 
     endpoints = report.get("endpoints", {}) if report else {}
     direct = endpoints.get("ranking_direct", {})
     cache = endpoints.get("ranking_cache", {})
+    has_live_compare = bool(live_direct.get("total_requests")) and bool(live_cache.get("total_requests"))
+
+    compare_avg_direct = live_direct.get("avg_duration_ms") if has_live_compare else direct.get("avg_ms")
+    compare_avg_cache = live_cache.get("avg_duration_ms") if has_live_compare else cache.get("avg_ms")
+    compare_avg_improvement = (
+        _improvement_pct(compare_avg_direct, compare_avg_cache)
+        if has_live_compare
+        else comparison.get("avg_latency_improvement_pct")
+    )
+
+    compare_p95_direct = live_direct.get("p95_duration_ms") if has_live_compare else direct.get("p95_ms")
+    compare_p95_cache = live_cache.get("p95_duration_ms") if has_live_compare else cache.get("p95_ms")
+    compare_p95_improvement = (
+        _improvement_pct(compare_p95_direct, compare_p95_cache)
+        if has_live_compare
+        else comparison.get("p95_latency_improvement_pct")
+    )
+
+    compare_rps_direct = live_direct.get("recent_rps") if has_live_compare else direct.get("rps")
+    compare_rps_cache = live_cache.get("recent_rps") if has_live_compare else cache.get("rps")
+    compare_rps_improvement = (
+        _gain_pct(compare_rps_direct, compare_rps_cache)
+        if has_live_compare
+        else comparison.get("rps_gain_pct")
+    )
+
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "hero": {
@@ -137,41 +196,42 @@ def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, 
             "direct_avg_ms": metrics["ranking_direct"].get("avg_duration_ms"),
         },
         "k6_compare": {
-            "available": report is not None,
+            "available": report is not None or has_live_compare,
+            "mode": "live" if has_live_compare else "summary",
             "avg_ms": {
-                "direct": direct.get("avg_ms"),
-                "cache": cache.get("avg_ms"),
-                "improvement_pct": comparison.get("avg_latency_improvement_pct"),
+                "direct": compare_avg_direct,
+                "cache": compare_avg_cache,
+                "improvement_pct": compare_avg_improvement,
             },
             "p95_ms": {
-                "direct": direct.get("p95_ms"),
-                "cache": cache.get("p95_ms"),
-                "improvement_pct": comparison.get("p95_latency_improvement_pct"),
+                "direct": compare_p95_direct,
+                "cache": compare_p95_cache,
+                "improvement_pct": compare_p95_improvement,
             },
             "rps": {
-                "direct": direct.get("rps"),
-                "cache": cache.get("rps"),
-                "improvement_pct": comparison.get("rps_gain_pct"),
+                "direct": compare_rps_direct,
+                "cache": compare_rps_cache,
+                "improvement_pct": compare_rps_improvement,
             },
         },
         "proof": {
             "cards": []
-            if not report
+            if not (report or has_live_compare)
             else [
                 {
                     "label": "평균 응답",
-                    "value": f"{comparison.get('avg_latency_improvement_pct', 0):.1f}%",
-                    "detail": f"직접 {direct.get('avg_ms', 0):.0f}ms / 캐시 {cache.get('avg_ms', 0):.0f}ms",
+                    "value": f"{(compare_avg_improvement or 0):.1f}%",
+                    "detail": f"직접 {(compare_avg_direct or 0):.0f}ms / 캐시 {(compare_avg_cache or 0):.0f}ms",
                 },
                 {
                     "label": "P95 응답",
-                    "value": f"{comparison.get('p95_latency_improvement_pct', 0):.1f}%",
-                    "detail": f"직접 {direct.get('p95_ms', 0):.0f}ms / 캐시 {cache.get('p95_ms', 0):.0f}ms",
+                    "value": f"{(compare_p95_improvement or 0):.1f}%",
+                    "detail": f"직접 {(compare_p95_direct or 0):.0f}ms / 캐시 {(compare_p95_cache or 0):.0f}ms",
                 },
                 {
                     "label": "처리량",
-                    "value": f"{comparison.get('rps_gain_pct', 0):.1f}%",
-                    "detail": f"직접 {direct.get('rps', 0):.1f}rps / 캐시 {cache.get('rps', 0):.1f}rps",
+                    "value": f"{(compare_rps_improvement or 0):.1f}%",
+                    "detail": f"직접 {(compare_rps_direct or 0):.1f}rps / 캐시 {(compare_rps_cache or 0):.1f}rps",
                 },
             ],
         },
@@ -407,13 +467,13 @@ def build_dashboard_html() -> str:
       const grid = document.getElementById("collections-grid")
       if(!grid) return
       grid.innerHTML = ""
-      ;(data.collections || []).forEach((collection)=>{const card=document.createElement("article");card.className="panel collection reveal";card.innerHTML=`<div class="eyebrow">${collection.title}</div><h3>${collection.title}</h3><div class="collection-grid">${(collection.products || []).map((product)=>`<article class="product-card"><div class="product-thumb"><img src="${product.image_url}" alt="${product.name}" loading="lazy" /></div><div><div class="product-kicker">#${product.rank} / ${product.brand}</div><div class="product-name">${product.name}</div><div class="meta"><span>${fmtPrice(product.price_krw)}</span><span>전환 ${fmtPct(product.conversion_pct)}</span><span>위시 ${fmtNumber(product.wishlists_28d)}</span></div></div></article>`).join("")}</div>`;grid.appendChild(card)})
+      ;(data.collections || []).forEach((collection)=>{const card=document.createElement("article");card.className="panel collection";card.innerHTML=`<div class="eyebrow">${collection.title}</div><h3>${collection.title}</h3><div class="collection-grid">${(collection.products || []).map((product)=>`<article class="product-card"><div class="product-thumb"><img src="${product.image_url}" alt="${product.name}" loading="lazy" /></div><div><div class="product-kicker">#${product.rank} / ${product.brand}</div><div class="product-name">${product.name}</div><div class="meta"><span>${fmtPrice(product.price_krw)}</span><span>전환 ${fmtPct(product.conversion_pct)}</span><span>위시 ${fmtNumber(product.wishlists_28d)}</span></div></div></article>`).join("")}</div>`;grid.appendChild(card)})
     }
     function renderSignals(data){
       const grid = document.getElementById("signals-grid")
       if(!grid) return
       grid.innerHTML = ""
-      ;(data.signals || []).forEach((signal)=>{const card=document.createElement("article");card.className="panel signal-card reveal";card.innerHTML=`<div class="eyebrow">${signal.title}</div><h3>${signal.title}</h3><p>${signal.copy}</p>`;grid.appendChild(card)})
+      ;(data.signals || []).forEach((signal)=>{const card=document.createElement("article");card.className="panel signal-card";card.innerHTML=`<div class="eyebrow">${signal.title}</div><h3>${signal.title}</h3><p>${signal.copy}</p>`;grid.appendChild(card)})
     }
     function renderRankingPreview(products){
       const container = document.getElementById("ranking-preview")
@@ -436,7 +496,7 @@ def build_dashboard_html() -> str:
       ]
       const summary = metrics.map((metric)=>{
         const item = compare[metric.key] || {}
-        return `<article class="k6-summary-card reveal"><div class="eyebrow">${metric.label}</div><strong>${fmtPct(item.improvement_pct)}</strong><div class="fine">직접 ${metric.formatter(item.direct)} / 캐시 ${metric.formatter(item.cache)}</div></article>`
+        return `<article class="k6-summary-card"><div class="eyebrow">${metric.label}</div><strong>${fmtPct(item.improvement_pct)}</strong><div class="fine">직접 ${metric.formatter(item.direct)} / 캐시 ${metric.formatter(item.cache)}</div></article>`
       }).join("")
       const bars = metrics.map((metric)=>{
         const item = compare[metric.key] || {}
@@ -462,7 +522,7 @@ def build_dashboard_html() -> str:
           </div>
         </div>`
       }).join("")
-      target.innerHTML = `<div class="k6-shell"><div class="k6-summary-grid">${summary}</div><div class="k6-chart reveal">${bars}</div></div>`
+      target.innerHTML = `<div class="k6-shell"><div class="k6-summary-grid">${summary}</div><div class="k6-chart">${bars}</div></div>`
     }
     function renderProof(data){
       const proof = data.proof || {}
@@ -476,7 +536,7 @@ def build_dashboard_html() -> str:
       setText("proof-copy", proof.cards?.length ? "측정된 k6 결과를 반영했습니다." : "표시할 측정 카드가 아직 없습니다.")
       const grid = document.getElementById("proof-grid")
       if(!grid) return
-      grid.innerHTML = (proof.cards || []).length ? (proof.cards || []).map((card)=>`<article class="panel proof-card reveal"><div class="eyebrow">${card.label}</div><strong>${card.value}</strong><div class="fine">${card.detail}</div></article>`).join("") : '<article class="panel proof-card reveal"><div class="empty">표시할 성능 카드가 없습니다.</div></article>'
+      grid.innerHTML = (proof.cards || []).length ? (proof.cards || []).map((card)=>`<article class="panel proof-card"><div class="eyebrow">${card.label}</div><strong>${card.value}</strong><div class="fine">${card.detail}</div></article>`).join("") : '<article class="panel proof-card"><div class="empty">표시할 성능 카드가 없습니다.</div></article>'
     }
     let dashboardLoadInFlight = false
     let dashboardPollHandle = null
