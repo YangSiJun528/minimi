@@ -36,6 +36,11 @@ class GetResponse(BaseResponse):
     found: bool
 
 
+class IncrResponse(BaseResponse):
+    key: str
+    value: int | None = None
+
+
 class TTLResponse(BaseResponse):
     key: str
     ttl_seconds: int | None = None
