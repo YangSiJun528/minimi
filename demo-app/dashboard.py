@@ -153,42 +153,39 @@ def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, 
         live_cache.get("last_request_at_ms") is not None
         and now_ms - float(live_cache["last_request_at_ms"]) <= 6000
     )
-    has_live_compare = (
-        live_direct.get("recent_sample_count", 0) >= 5
-        and live_cache.get("recent_sample_count", 0) >= 5
-        and direct_fresh
-        and cache_fresh
-    )
+    direct_live_ready = live_direct.get("recent_sample_count", 0) >= 5 and direct_fresh
+    cache_live_ready = live_cache.get("recent_sample_count", 0) >= 5 and cache_fresh
+    has_live_compare = direct_live_ready or cache_live_ready
 
-    compare_avg_direct = live_direct.get("avg_duration_ms") if has_live_compare else direct.get("avg_ms")
-    compare_avg_cache = live_cache.get("avg_duration_ms") if has_live_compare else cache.get("avg_ms")
-    compare_avg_improvement = (
-        _improvement_pct(compare_avg_direct, compare_avg_cache)
-        if has_live_compare
-        else comparison.get("avg_latency_improvement_pct")
-    )
+    compare_avg_direct = live_direct.get("avg_duration_ms") if direct_live_ready else direct.get("avg_ms")
+    compare_avg_cache = live_cache.get("avg_duration_ms") if cache_live_ready else cache.get("avg_ms")
+    compare_avg_improvement = _improvement_pct(compare_avg_direct, compare_avg_cache)
+    if compare_avg_improvement is None:
+        compare_avg_improvement = comparison.get("avg_latency_improvement_pct")
 
-    compare_p95_direct = live_direct.get("p95_duration_ms") if has_live_compare else direct.get("p95_ms")
-    compare_p95_cache = live_cache.get("p95_duration_ms") if has_live_compare else cache.get("p95_ms")
-    compare_p95_improvement = (
-        _improvement_pct(compare_p95_direct, compare_p95_cache)
-        if has_live_compare
-        else comparison.get("p95_latency_improvement_pct")
-    )
+    compare_p95_direct = live_direct.get("p95_duration_ms") if direct_live_ready else direct.get("p95_ms")
+    compare_p95_cache = live_cache.get("p95_duration_ms") if cache_live_ready else cache.get("p95_ms")
+    compare_p95_improvement = _improvement_pct(compare_p95_direct, compare_p95_cache)
+    if compare_p95_improvement is None:
+        compare_p95_improvement = comparison.get("p95_latency_improvement_pct")
 
-    compare_rps_direct = live_direct.get("recent_rps") if has_live_compare else direct.get("rps")
-    compare_rps_cache = live_cache.get("recent_rps") if has_live_compare else cache.get("rps")
-    compare_rps_improvement = (
-        _gain_pct(compare_rps_direct, compare_rps_cache)
-        if has_live_compare
-        else comparison.get("rps_gain_pct")
-    )
+    compare_rps_direct = live_direct.get("recent_rps") if direct_live_ready else direct.get("rps")
+    compare_rps_cache = live_cache.get("recent_rps") if cache_live_ready else cache.get("rps")
+    compare_rps_improvement = _gain_pct(compare_rps_direct, compare_rps_cache)
+    if compare_rps_improvement is None:
+        compare_rps_improvement = comparison.get("rps_gain_pct")
+
+    compare_mode = "summary"
+    if direct_live_ready and cache_live_ready:
+        compare_mode = "live"
+    elif has_live_compare:
+        compare_mode = "mixed"
 
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "hero": {
             "eyebrow": "MINI REDIS FASHION DEMO",
-            "title": "랭킹은 그대로, 체감 속도만 빠르게",
+            "title": "랭킹은 그대로,  체감 속도만 빠르게",
             "subtitle": f"지금 1위는 {top['brand']}의 {top['name']}입니다." if top else "상위 상품을 불러오는 중입니다.",
             "chips": ["실시간 비교", "TTL 5초"],
             "featured": top,
@@ -214,7 +211,7 @@ def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, 
         },
         "k6_compare": {
             "available": report is not None or has_live_compare,
-            "mode": "live" if has_live_compare else "summary",
+            "mode": compare_mode,
             "avg_ms": {
                 "direct": compare_avg_direct,
                 "cache": compare_avg_cache,
@@ -349,7 +346,7 @@ def build_dashboard_html() -> str:
     <section class="hero reveal">
       <div class="panel hero-copy">
         <div class="eyebrow" id="hero-eyebrow">MINI REDIS FASHION DEMO</div>
-        <h1 id="hero-title">랭킹은 그대로, 체감 속도만 빠르게</h1>
+        <h1 id="hero-title">랭킹은 그대로,  체감 속도만 빠르게</h1>
         <p class="hero-sub" id="hero-subtitle">상위 상품을 불러오는 중입니다.</p>
         <div class="chip-row" id="hero-chips"></div>
         <div class="hero-actions">
