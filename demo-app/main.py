@@ -113,6 +113,14 @@ class MiniRedisClient:
             raise RuntimeError(f"miniredis GET {path} failed") from exc
         return response.json()
 
+    def _delete(self, path: str) -> dict[str, Any]:
+        try:
+            response = self._client.delete(path)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"miniredis DELETE {path} failed") from exc
+        return response.json()
+
     def _post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             response = self._client.post(path, json=payload or {})
@@ -132,17 +140,17 @@ class MiniRedisClient:
         self._post("/set", payload)
 
     def get(self, key: str) -> object | None:
-        payload = self._post("/get", {"key": key})
+        payload = self._get(f"/get?key={key}")
         if not payload.get("found", False):
             return None
         return payload.get("value")
 
     def delete(self, key: str) -> bool:
-        payload = self._post("/delete", {"key": key})
+        payload = self._delete(f"/delete?key={key}")
         return bool(payload.get("success", False))
 
     def exists(self, key: str) -> bool:
-        payload = self._post("/exists", {"key": key})
+        payload = self._get(f"/exists?key={key}")
         return bool(payload.get("exists", False))
 
     def close(self) -> None:
@@ -196,7 +204,7 @@ def dashboard_data() -> dict[str, Any]:
     return build_dashboard_payload(
         metrics_store=metrics_store,
         report_path=REPORT_PATH,
-        ranking_preview=mongo_gateway.preview_ranking(limit=5),
+        ranking_preview=mongo_gateway.preview_ranking(limit=10),
     )
 
 

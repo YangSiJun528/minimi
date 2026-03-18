@@ -1,83 +1,77 @@
 from __future__ import annotations
 
 import json
-import math
-import threading
+from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from statistics import mean
+from threading import Lock
+from typing import Any, Literal
 
 
-def _percentile(values: list[float], percentile: float) -> float | None:
-    if not values:
-        return None
+CacheStatus = Literal["hit", "miss", "bypass"]
 
-    ordered = sorted(values)
-    index = math.ceil((percentile / 100) * len(ordered)) - 1
-    return ordered[max(index, 0)]
+CATEGORY_IMAGE_MAP = {
+    "Jacket": "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=900&q=80",
+    "Shirt": "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=900&q=80",
+    "Knit": "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=900&q=80",
+    "Denim": "https://images.unsplash.com/photo-1541099649105-f69ad21f3246?auto=format&fit=crop&w=900&q=80",
+    "Sneaker": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=900&q=80",
+    "Coat": "https://images.unsplash.com/photo-1523381210434-271e8be1f52b?auto=format&fit=crop&w=900&q=80",
+    "Bag": "https://images.unsplash.com/photo-1584917865442-de89df76afd3?auto=format&fit=crop&w=900&q=80",
+    "Pants": "https://images.unsplash.com/photo-1473966968600-fa801b869a1a?auto=format&fit=crop&w=900&q=80",
+}
 
 
-@dataclass
+@dataclass(slots=True)
 class EndpointMetrics:
-    requests: int = 0
-    successes: int = 0
-    failures: int = 0
-    total_duration_ms: float = 0.0
-    durations_ms: list[float] = field(default_factory=list)
+    total_requests: int = 0
+    success_count: int = 0
+    failure_count: int = 0
     last_duration_ms: float | None = None
-    cache_hits: int = 0
-    cache_misses: int = 0
+    cache_hit_count: int = 0
+    cache_miss_count: int = 0
+    recent_durations_ms: deque[float] = field(default_factory=lambda: deque(maxlen=40))
 
-    def record(self, duration_ms: float, success: bool, cache_status: str | None = None) -> None:
-        self.requests += 1
-        self.total_duration_ms += duration_ms
-        self.durations_ms.append(duration_ms)
+    def record(self, duration_ms: float, success: bool, cache_status: CacheStatus | None = None) -> None:
+        self.total_requests += 1
         self.last_duration_ms = duration_ms
-
+        self.recent_durations_ms.append(duration_ms)
         if success:
-            self.successes += 1
+            self.success_count += 1
         else:
-            self.failures += 1
-
+            self.failure_count += 1
         if cache_status == "hit":
-            self.cache_hits += 1
+            self.cache_hit_count += 1
         elif cache_status == "miss":
-            self.cache_misses += 1
+            self.cache_miss_count += 1
 
     def snapshot(self) -> dict[str, Any]:
-        avg_ms = self.total_duration_ms / self.requests if self.requests else None
-        p95_ms = _percentile(self.durations_ms, 95)
-        failure_rate = self.failures / self.requests if self.requests else None
-        hit_ratio = self.cache_hits / max(self.cache_hits + self.cache_misses, 1) if self.cache_hits or self.cache_misses else None
-
+        avg = mean(self.recent_durations_ms) if self.recent_durations_ms else None
+        total_cache = self.cache_hit_count + self.cache_miss_count
+        hit_rate = (self.cache_hit_count / total_cache * 100) if total_cache else None
         return {
-            "requests": self.requests,
-            "successes": self.successes,
-            "failures": self.failures,
-            "avg_ms": round(avg_ms, 2) if avg_ms is not None else None,
-            "p95_ms": round(p95_ms, 2) if p95_ms is not None else None,
-            "last_ms": round(self.last_duration_ms, 2) if self.last_duration_ms is not None else None,
-            "failure_rate": round(failure_rate, 4) if failure_rate is not None else None,
-            "cache_hits": self.cache_hits,
-            "cache_misses": self.cache_misses,
-            "hit_ratio": round(hit_ratio, 4) if hit_ratio is not None else None,
+            "avg_duration_ms": None if avg is None else round(avg, 2),
+            "cache_hit_count": self.cache_hit_count,
+            "cache_miss_count": self.cache_miss_count,
+            "cache_hit_rate_pct": None if hit_rate is None else round(hit_rate, 1),
         }
 
 
 class DemoMetricsStore:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = Lock()
         self._ranking_direct = EndpointMetrics()
         self._ranking_cache = EndpointMetrics()
 
     def record_ranking_direct(self, duration_ms: float, success: bool) -> None:
         with self._lock:
-            self._ranking_direct.record(duration_ms=duration_ms, success=success)
+            self._ranking_direct.record(duration_ms, success, "bypass")
 
-    def record_ranking_cache(self, duration_ms: float, success: bool, cache_status: str | None = None) -> None:
+    def record_ranking_cache(self, duration_ms: float, success: bool, cache_status: CacheStatus) -> None:
         with self._lock:
-            self._ranking_cache.record(duration_ms=duration_ms, success=success, cache_status=cache_status)
+            self._ranking_cache.record(duration_ms, success, cache_status)
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -87,792 +81,434 @@ class DemoMetricsStore:
             }
 
 
-def load_latest_report(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
+def _read_report(report_path: Path) -> dict[str, Any] | None:
+    if not report_path.exists():
         return None
-
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {
-            "status": "invalid",
-            "message": f"invalid JSON in {path}",
-            "generated_at": None,
-        }
-
-
-def normalize_latest_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
-    if report is None:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return None
 
-    if report.get("status") == "invalid":
-        return report
 
-    endpoints = report.get("endpoints") or {}
-    ranking_direct = endpoints.get("ranking_direct")
-    ranking_cache = endpoints.get("ranking_cache")
+def _decorate_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for product in products:
+        item = dict(product)
+        item["image_url"] = CATEGORY_IMAGE_MAP.get(product.get("category"), CATEGORY_IMAGE_MAP["Shirt"])
+        result.append(item)
+    return result
 
-    if not ranking_direct or not ranking_cache:
-        return {
-            "status": "stale",
-            "generated_at": report.get("generated_at"),
-            "message": "현재 요약 파일은 이전 db-direct/cache 시나리오 결과입니다. ranking 시나리오로 k6를 다시 실행하세요.",
-        }
 
+def build_dashboard_payload(metrics_store: DemoMetricsStore, report_path: Path, ranking_preview: dict[str, Any]) -> dict[str, Any]:
+    metrics = metrics_store.snapshot()
+    products = _decorate_products(ranking_preview.get("top_products", []))
+    top = products[0] if products else None
+    report = _read_report(report_path)
+    comparison = report.get("comparison", {}) if report else {}
+    endpoints = report.get("endpoints", {}) if report else {}
+    direct = endpoints.get("ranking_direct", {})
+    cache = endpoints.get("ranking_cache", {})
     return {
-        "status": "ready",
-        **report,
-    }
-
-
-def build_dashboard_payload(
-    metrics_store: DemoMetricsStore,
-    report_path: Path,
-    ranking_preview: dict[str, Any],
-) -> dict[str, Any]:
-    return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "scenario": {
-            "title": "Fashion Ranking Cache Demo",
-            "ranking_name": ranking_preview["ranking_name"],
-            "catalog_size": ranking_preview["catalog_size"],
-            "top_n": 10,
-            "ttl_seconds": 5,
-            "load_profile": "100 VUs x 10s",
-            "cache_key": "ranking:top10",
-            "algorithm": "views + likes + wishlists + sales + reviews + repeat buyers + freshness",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "hero": {
+            "eyebrow": "MINI REDIS FASHION DEMO",
+            "title": "랭킹은 그대로, \n체감 속도만 빠르게",
+            "subtitle": f"지금 1위는 {top['brand']}의 {top['name']}입니다." if top else "상위 상품을 불러오는 중입니다.",
+            "chips": ["실시간 비교", "TTL 5초"],
+            "featured": top,
         },
-        "ranking_preview": ranking_preview,
-        "live_metrics": metrics_store.snapshot(),
-        "latest_report": normalize_latest_report(load_latest_report(report_path)),
-        "report_path": str(report_path),
+        "ranking_preview": {**ranking_preview, "top_products": products},
+        "collections": [
+            {"title": "지금 뜨는 상품", "products": products[:3]},
+            {"title": "위시가 높은 상품", "products": sorted(products, key=lambda item: item["wishlists_28d"], reverse=True)[:3]},
+            {"title": "전환이 강한 상품", "products": sorted(products, key=lambda item: item["conversion_pct"], reverse=True)[:3]},
+        ],
+        "signals": [
+            {"title": "수요", "copy": "조회, 좋아요, 위시리스트 같은 관심 신호를 반영합니다."},
+            {"title": "판매", "copy": "판매량과 재구매 흐름이 강한 상품이 위로 올라옵니다."},
+            {"title": "리뷰", "copy": "리뷰 품질과 반품 패널티까지 함께 계산합니다."},
+        ],
+        "cache_demo": {
+            "ttl_seconds": 5,
+            "cache_hit_rate_pct": metrics["ranking_cache"].get("cache_hit_rate_pct"),
+            "cache_hits": metrics["ranking_cache"].get("cache_hit_count", 0),
+            "cache_misses": metrics["ranking_cache"].get("cache_miss_count", 0),
+            "cache_avg_ms": metrics["ranking_cache"].get("avg_duration_ms"),
+            "direct_avg_ms": metrics["ranking_direct"].get("avg_duration_ms"),
+        },
+        "k6_compare": {
+            "available": report is not None,
+            "avg_ms": {
+                "direct": direct.get("avg_ms"),
+                "cache": cache.get("avg_ms"),
+                "improvement_pct": comparison.get("avg_latency_improvement_pct"),
+            },
+            "p95_ms": {
+                "direct": direct.get("p95_ms"),
+                "cache": cache.get("p95_ms"),
+                "improvement_pct": comparison.get("p95_latency_improvement_pct"),
+            },
+            "rps": {
+                "direct": direct.get("rps"),
+                "cache": cache.get("rps"),
+                "improvement_pct": comparison.get("rps_gain_pct"),
+            },
+        },
+        "proof": {
+            "cards": []
+            if not report
+            else [
+                {
+                    "label": "평균 응답",
+                    "value": f"{comparison.get('avg_latency_improvement_pct', 0):.1f}%",
+                    "detail": f"직접 {direct.get('avg_ms', 0):.0f}ms / 캐시 {cache.get('avg_ms', 0):.0f}ms",
+                },
+                {
+                    "label": "P95 응답",
+                    "value": f"{comparison.get('p95_latency_improvement_pct', 0):.1f}%",
+                    "detail": f"직접 {direct.get('p95_ms', 0):.0f}ms / 캐시 {cache.get('p95_ms', 0):.0f}ms",
+                },
+                {
+                    "label": "처리량",
+                    "value": f"{comparison.get('rps_gain_pct', 0):.1f}%",
+                    "detail": f"직접 {direct.get('rps', 0):.1f}rps / 캐시 {cache.get('rps', 0):.1f}rps",
+                },
+            ],
+        },
     }
 
 
 def build_dashboard_html() -> str:
     return """<!DOCTYPE html>
 <html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Minimi Ranking Cache Demo</title>
-    <style>
-      :root {
-        --bg: #f7f1e7;
-        --paper: rgba(255, 250, 243, 0.92);
-        --ink: #1f2430;
-        --muted: #5d6777;
-        --accent: #d95d39;
-        --accent-soft: rgba(217, 93, 57, 0.14);
-        --cache: #1b7f6a;
-        --cache-soft: rgba(27, 127, 106, 0.14);
-        --line: rgba(31, 36, 48, 0.12);
-        --shadow: 0 20px 50px rgba(58, 45, 31, 0.12);
-      }
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>미니미 쇼룸</title>
+  <style>
+    :root{--panel:rgba(16,22,46,.78);--line:rgba(173,188,255,.14);--text:#eef3ff;--muted:#aeb9dc;--accent:#9ad1ff;--accent2:#d478ff;--radius:24px;--shadow:0 22px 64px rgba(2,4,14,.42)}
+    *{box-sizing:border-box}
+    body{margin:0;color:var(--text);font-family:"Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",sans-serif;background:radial-gradient(circle at 20% 20%, rgba(122,142,255,.28), transparent 22%),radial-gradient(circle at 80% 15%, rgba(212,120,255,.18), transparent 18%),radial-gradient(circle at 50% 80%, rgba(80,150,255,.15), transparent 26%),linear-gradient(180deg,#070a18 0%,#0a1023 48%,#050814 100%);min-height:100vh}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:radial-gradient(circle, rgba(255,255,255,.7) 0 1px, transparent 1.5px),radial-gradient(circle, rgba(255,255,255,.35) 0 1px, transparent 1.5px);background-size:160px 160px,240px 240px;background-position:0 0,60px 80px;opacity:.18}
+    .page{width:min(1220px,calc(100vw - 28px));margin:0 auto;padding:18px 0 44px;position:relative;z-index:1}
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(16px)}
+    .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 20px;border:1px solid var(--line);border-radius:999px;background:rgba(10,14,30,.62);position:sticky;top:14px;z-index:5}
+    .brand{display:flex;align-items:center;gap:10px;font-weight:700}
+    .brand-mark{width:36px;height:36px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#09101f}
+    .nav{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:.9rem}
+    .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:18px;margin:20px 0 18px}
+    .hero-copy,.featured-card,.collection,.signal-card,.proof-card,.panel-block,.operator,.k6-panel{padding:16px}
+    .eyebrow{font-size:.76rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin-bottom:10px}
+    h1{margin:0 0 10px;font-size:clamp(2rem,3vw,3.4rem);line-height:1.08;letter-spacing:-.05em;max-width:14ch}
+    h2{margin:0;font-size:clamp(1.35rem,2.3vw,2rem);letter-spacing:-.04em}
+    h3{margin:0 0 6px;font-size:1rem}
+    p{margin:0;color:var(--muted);line-height:1.6}
+    .hero-sub{max-width:32ch}
+    .chip-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+    .chip{padding:8px 11px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--muted);font-size:.85rem}
+    .hero-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+    .btn{border:0;border-radius:999px;padding:12px 15px;cursor:pointer;transition:transform .2s ease,opacity .2s ease}
+    .btn:hover{transform:translateY(-1px)}
+    .btn-primary{background:linear-gradient(135deg,var(--accent),#b6a7ff);color:#09101f}
+    .btn-secondary{background:rgba(255,255,255,.04);color:var(--text);border:1px solid var(--line)}
+    .hero-demo{margin-top:18px;padding-top:18px;border-top:1px solid var(--line)}
+    .compare-stats,.stat-strip,.collections,.signals,.proof-grid,.k6-summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .stat-box,.k6-summary-card{padding:14px;border-radius:18px;background:rgba(255,255,255,.04);border:1px solid var(--line)}
+    .stat-box strong,.k6-summary-card strong{display:block;margin-top:6px;font-size:1.35rem}
+    .results-log{margin:0;padding:16px;border-radius:18px;background:rgba(6,9,20,.92);border:1px solid var(--line);color:#dbe6ff;min-height:144px;white-space:pre-wrap;font:0.9rem/1.6 Consolas,Monaco,monospace}
+    .hero-side{display:grid;gap:12px}
+    .featured-image{width:100%;aspect-ratio:4/5;border-radius:20px;overflow:hidden;background:#111;margin-bottom:12px}
+    .featured-image img{width:100%;height:100%;object-fit:cover;display:block}
+    .featured-meta{display:grid;gap:6px}
+    .section{margin-top:18px}
+    .section-head{display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,360px);gap:16px;align-items:end;margin-bottom:14px}
+    .k6-shell{display:grid;grid-template-columns:.95fr 1.05fr;gap:16px}
+    .k6-chart{padding:16px;border-radius:20px;background:rgba(8,11,24,.78);border:1px solid var(--line);display:grid;gap:14px}
+    .k6-bar-group{display:grid;gap:8px}
+    .k6-bar-head{display:flex;justify-content:space-between;gap:12px;align-items:end}
+    .k6-track{display:grid;gap:8px}
+    .k6-bar-row{display:grid;grid-template-columns:64px 1fr auto;gap:10px;align-items:center}
+    .k6-bar-label{font-size:.82rem;color:var(--muted)}
+    .k6-bar-fill{height:12px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.07);border:1px solid rgba(173,188,255,.1)}
+    .k6-bar-fill span{display:block;height:100%;border-radius:inherit}
+    .k6-bar-fill .direct{background:linear-gradient(90deg,rgba(255,140,164,.95),rgba(255,103,120,.82))}
+    .k6-bar-fill .cache{background:linear-gradient(90deg,rgba(154,209,255,.96),rgba(120,133,255,.82))}
+    .k6-bar-value{font-size:.84rem;color:var(--text);min-width:74px;text-align:right}
+    .k6-empty{padding:24px;border-radius:20px;border:1px dashed var(--line);background:rgba(255,255,255,.03);color:var(--muted)}
+    .collection-grid{display:grid;gap:10px;margin-top:12px}
+    .product-card{display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;padding:10px;border-radius:18px;background:rgba(255,255,255,.04);border:1px solid var(--line);align-items:center}
+    .product-thumb{width:92px;height:108px;border-radius:14px;overflow:hidden;background:#111}
+    .product-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+    .product-kicker{font-size:.76rem;color:var(--muted);margin-bottom:4px}
+    .product-name{font-size:.96rem;font-weight:700;line-height:1.28}
+    .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:var(--muted);font-size:.86rem}
+    .ranking-grid{display:grid;gap:8px}
+    .ranking-row{display:grid;grid-template-columns:48px 1.25fr .8fr .8fr .8fr .7fr;gap:10px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line);font-size:.9rem}
+    .pill{display:inline-flex;justify-content:center;align-items:center;padding:6px 10px;border-radius:999px;background:rgba(154,209,255,.12);color:var(--accent);font-size:.76rem}
+    .proof-card strong{display:block;font-size:1.8rem;margin-top:8px}
+    details{border:1px solid var(--line);border-radius:22px;background:rgba(10,14,30,.58);overflow:hidden}
+    summary{cursor:pointer;list-style:none;padding:16px 18px;font-weight:700}
+    summary::-webkit-details-marker{display:none}
+    .operator-body{padding:0 18px 18px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .field{display:grid;gap:6px;margin-bottom:10px}
+    label{font-size:.86rem;color:var(--muted)}
+    input,textarea{width:100%;padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--text);font:inherit}
+    textarea{min-height:100px;resize:vertical}
+    .fine{color:var(--muted);font-size:.88rem;line-height:1.6}
+    .empty{padding:14px 0;color:var(--muted)}
+    .reveal{opacity:.18;transform:translateY(24px) scale(.985);transition:opacity .55s ease,transform .55s cubic-bezier(.22,1,.36,1)}
+    .reveal.is-visible{opacity:1;transform:none}
+    @media (max-width:1080px){.hero,.section-head,.operator-body,.collections,.signals,.proof-grid,.compare-stats,.stat-strip,.k6-shell,.k6-summary-grid{grid-template-columns:1fr}.ranking-row{grid-template-columns:42px 1fr}.ranking-row>:nth-child(n+3){justify-self:start}}
+    @media (max-width:720px){.page{width:min(100vw - 18px,1220px)}.hero-copy,.featured-card,.collection,.signal-card,.proof-card,.panel-block,.operator,.k6-panel{padding:14px}.product-card{grid-template-columns:82px 1fr}.product-thumb{width:82px;height:98px}h1{max-width:none;font-size:clamp(1.8rem,8vw,2.7rem)}}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark">M</div><span>미니미 쇼룸</span></div>
+      <nav class="nav"><span>컬렉션</span><span>랭킹</span><span>캐시</span><span>성능</span></nav>
+    </header>
 
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        font-family: "Avenir Next", "Pretendard", "Apple SD Gothic Neo", sans-serif;
-        color: var(--ink);
-        background:
-          radial-gradient(circle at top left, rgba(217, 93, 57, 0.15), transparent 30%),
-          radial-gradient(circle at top right, rgba(27, 127, 106, 0.12), transparent 26%),
-          linear-gradient(180deg, #f9f4ea 0%, #f2eadf 100%);
-      }
-
-      main {
-        width: min(1240px, calc(100vw - 32px));
-        margin: 24px auto 48px;
-      }
-
-      .hero,
-      .panel {
-        background: var(--paper);
-        border: 1px solid rgba(31, 36, 48, 0.08);
-        box-shadow: var(--shadow);
-      }
-
-      .hero {
-        border-radius: 28px;
-        padding: 28px;
-      }
-
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 12px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.72);
-        color: var(--muted);
-        font-size: 13px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      h1 {
-        margin: 16px 0 8px;
-        font-size: clamp(30px, 5vw, 58px);
-        line-height: 0.96;
-        letter-spacing: -0.04em;
-      }
-
-      .lede {
-        margin: 0;
-        max-width: 760px;
-        color: var(--muted);
-        font-size: 18px;
-        line-height: 1.6;
-      }
-
-      .chip-row,
-      .button-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-
-      .chip-row {
-        margin-top: 20px;
-      }
-
-      .chip {
-        padding: 10px 14px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.72);
-        border: 1px solid rgba(31, 36, 48, 0.08);
-        font-size: 14px;
-      }
-
-      .cta-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 22px;
-      }
-
-      .cta,
-      button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 0;
-        border-radius: 999px;
-        padding: 12px 16px;
-        font: inherit;
-        cursor: pointer;
-        color: white;
-        text-decoration: none;
-        background: linear-gradient(135deg, #172033, #33405b);
-      }
-
-      .cta.alt,
-      button.alt {
-        background: linear-gradient(135deg, #1b7f6a, #39b89b);
-      }
-
-      button.warn {
-        background: linear-gradient(135deg, #b0472d, #d95d39);
-      }
-
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(12, minmax(0, 1fr));
-        gap: 18px;
-        margin-top: 18px;
-      }
-
-      .panel {
-        border-radius: 24px;
-        padding: 22px;
-      }
-
-      .panel h2 {
-        margin: 0 0 10px;
-        font-size: 20px;
-        letter-spacing: -0.03em;
-      }
-
-      .panel p {
-        margin: 0;
-        color: var(--muted);
-        line-height: 1.6;
-      }
-
-      .wide {
-        grid-column: span 7;
-      }
-
-      .narrow {
-        grid-column: span 5;
-      }
-
-      .full {
-        grid-column: 1 / -1;
-      }
-
-      .metric-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 14px;
-        margin-top: 18px;
-      }
-
-      .metric-card {
-        border-radius: 18px;
-        padding: 18px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.7);
-      }
-
-      .metric-card.db {
-        background: linear-gradient(180deg, rgba(217, 93, 57, 0.08), rgba(255, 255, 255, 0.72));
-      }
-
-      .metric-card.cache {
-        background: linear-gradient(180deg, rgba(27, 127, 106, 0.08), rgba(255, 255, 255, 0.72));
-      }
-
-      .metric-title,
-      .bar-label {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      .metric-title {
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-size: 13px;
-      }
-
-      .metric-value {
-        margin-top: 10px;
-        font-size: 34px;
-        font-weight: 700;
-        letter-spacing: -0.04em;
-      }
-
-      .metric-sub {
-        margin-top: 8px;
-        color: var(--muted);
-        font-size: 14px;
-        line-height: 1.6;
-      }
-
-      .preview-list {
-        margin: 18px 0 0;
-        padding: 0;
-        list-style: none;
-        display: grid;
-        gap: 10px;
-      }
-
-      .preview-item {
-        display: grid;
-        grid-template-columns: 60px 1fr auto;
-        gap: 14px;
-        align-items: center;
-        padding: 12px 14px;
-        border-radius: 18px;
-        background: rgba(255, 255, 255, 0.72);
-        border: 1px solid var(--line);
-      }
-
-      .rank-pill {
-        display: inline-flex;
-        justify-content: center;
-        align-items: center;
-        width: 60px;
-        height: 44px;
-        border-radius: 14px;
-        background: linear-gradient(135deg, #172033, #33405b);
-        color: white;
-        font-weight: 700;
-      }
-
-      .preview-name {
-        font-weight: 700;
-      }
-
-      .preview-meta {
-        margin-top: 4px;
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      .score {
-        font-size: 18px;
-        font-weight: 700;
-      }
-
-      .flow {
-        display: grid;
-        gap: 10px;
-        margin-top: 18px;
-      }
-
-      .flow-step,
-      .empty,
-      pre {
-        border-radius: 18px;
-      }
-
-      .flow-step {
-        padding: 14px 16px;
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.68);
-      }
-
-      .kicker {
-        color: var(--muted);
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-      }
-
-      .bars {
-        margin-top: 16px;
-        display: grid;
-        gap: 12px;
-      }
-
-      .bar-row {
-        display: grid;
-        gap: 8px;
-      }
-
-      .bar-track {
-        height: 12px;
-        border-radius: 999px;
-        background: rgba(31, 36, 48, 0.08);
-        overflow: hidden;
-      }
-
-      .bar-fill {
-        height: 100%;
-        border-radius: 999px;
-      }
-
-      .bar-fill.db {
-        background: linear-gradient(90deg, #d95d39, #ef8d4f);
-      }
-
-      .bar-fill.cache {
-        background: linear-gradient(90deg, #1b7f6a, #39b89b);
-      }
-
-      .empty {
-        margin-top: 18px;
-        padding: 16px;
-        background: rgba(255, 255, 255, 0.68);
-        border: 1px dashed rgba(31, 36, 48, 0.16);
-        color: var(--muted);
-        line-height: 1.6;
-      }
-
-      .playground {
-        display: grid;
-        grid-template-columns: 1.2fr 0.8fr;
-        gap: 18px;
-        margin-top: 18px;
-      }
-
-      .field-group {
-        display: grid;
-        gap: 12px;
-      }
-
-      .field-group label {
-        display: grid;
-        gap: 8px;
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      input,
-      textarea {
-        width: 100%;
-        border: 1px solid rgba(31, 36, 48, 0.14);
-        border-radius: 16px;
-        background: rgba(255, 255, 255, 0.74);
-        padding: 14px 16px;
-        color: var(--ink);
-        font: inherit;
-      }
-
-      textarea {
-        min-height: 220px;
-        resize: vertical;
-      }
-
-      pre {
-        margin: 0;
-        padding: 16px;
-        min-height: 320px;
-        background: #182033;
-        color: #edf2ff;
-        overflow: auto;
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-
-      .footnote {
-        margin-top: 16px;
-        color: var(--muted);
-        font-size: 13px;
-      }
-
-      @media (max-width: 900px) {
-        .wide,
-        .narrow,
-        .full {
-          grid-column: 1 / -1;
-        }
-
-        .metric-grid {
-          grid-template-columns: 1fr;
-        }
-
-        .playground {
-          grid-template-columns: 1fr;
-        }
-
-        .preview-item {
-          grid-template-columns: 52px 1fr;
-        }
-
-        .score {
-          grid-column: 2;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <section class="hero">
-        <div class="eyebrow">Minimi Demo App</div>
-        <h1>랭킹 계산이 비쌀수록, 캐시 유무가 더 크게 드러납니다</h1>
-        <p class="lede">
-          이 화면은 1000개 상품 후보를 읽고 점수를 계산해 상위 10을 뽑는 랭킹 시나리오를 보여줍니다.
-          demo-app 실시간 메트릭과 마지막 k6 결과를 같은 화면에서 비교할 수 있습니다.
-        </p>
-        <div id="scenario-chips" class="chip-row"></div>
-        <div class="cta-row">
-          <a class="cta" href="/ranking-direct" target="_blank" rel="noreferrer">/ranking-direct 보기</a>
-          <a class="cta alt" href="/ranking-cache" target="_blank" rel="noreferrer">/ranking-cache 보기</a>
+    <section class="hero reveal">
+      <div class="panel hero-copy">
+        <div class="eyebrow" id="hero-eyebrow">MINI REDIS FASHION DEMO</div>
+        <h1 id="hero-title">랭킹은 그대로, 체감 속도만 빠르게</h1>
+        <p class="hero-sub" id="hero-subtitle">상위 상품을 불러오는 중입니다.</p>
+        <div class="chip-row" id="hero-chips"></div>
+        <div class="hero-actions">
+          <button class="btn btn-primary" id="compare-cache" type="button">캐시 랭킹</button>
+          <button class="btn btn-secondary" id="compare-direct" type="button">직접 랭킹</button>
         </div>
-      </section>
-
-      <section class="grid">
-        <article class="panel wide">
-          <h2>실시간 요청 메트릭</h2>
-          <p>브라우저는 2초마다 데이터를 다시 불러옵니다. 페이지를 새로고침하지 않아도 k6 결과와 live metric이 갱신됩니다.</p>
-          <div id="live-metrics" class="metric-grid"></div>
-        </article>
-
-        <article class="panel narrow">
-          <h2>랭킹 Top Preview</h2>
-          <p>미리 계산한 상위 후보 5개입니다. 실제 API는 top 10을 반환합니다.</p>
-          <ul id="ranking-preview" class="preview-list"></ul>
-        </article>
-
-        <article class="panel full">
-          <h2>요청 흐름</h2>
-          <p>같은 랭킹 연산을 direct와 cache 두 경로로 비교합니다.</p>
-          <div class="flow">
-            <div class="flow-step">
-              <div class="kicker">Ranking Direct</div>
-              상품 1000개를 읽고 조회수, 좋아요, 위시리스트, 판매량, 리뷰, 재구매 지표를 합산해 상위 10을 매번 다시 계산합니다.
-            </div>
-            <div class="flow-step">
-              <div class="kicker">Ranking Cache</div>
-              먼저 <code>ranking:top10</code> 을 읽고, miss일 때만 같은 계산을 수행한 뒤 TTL 5초로 저장합니다.
-            </div>
-            <div class="flow-step">
-              <div class="kicker">Why It Matters</div>
-              비싼 집계와 정렬이 많은 조회일수록 캐시 hit의 이득이 더 커지고, 같은 시간에 더 많은 요청을 처리할 수 있습니다.
-            </div>
+        <div class="hero-demo">
+          <div class="compare-stats">
+            <div class="stat-box"><div>실시간 캐시 적중률</div><strong id="live-hit-rate">-</strong></div>
+            <div class="stat-box"><div>캐시 평균 응답</div><strong id="live-cache-avg">-</strong></div>
+            <div class="stat-box"><div>직접 평균 응답</div><strong id="live-direct-avg">-</strong></div>
+          </div>
+          <pre class="results-log" id="result-log">다음 시연 요청을 기다리는 중입니다.</pre>
+        </div>
+      </div>
+      <div class="hero-side">
+        <article class="panel featured-card reveal">
+          <div class="featured-image"><img id="featured-image" alt="대표 상품 이미지" /></div>
+          <div class="featured-meta">
+            <h3 id="featured-name">대표 상품</h3>
+            <p id="featured-copy">데이터를 불러오는 중입니다.</p>
           </div>
         </article>
+        <div class="stat-strip">
+          <div class="stat-box reveal"><div>TTL</div><strong id="cache-ttl">5초</strong></div>
+          <div class="stat-box reveal"><div>평균 개선</div><strong id="proof-lift">-</strong></div>
+          <div class="stat-box reveal"><div>캐시 적중률</div><strong id="live-hit-rate-hero">-</strong></div>
+        </div>
+      </div>
+    </section>
 
-        <article class="panel full">
-          <h2>마지막 k6 실행 결과</h2>
-          <p>k6가 저장한 JSON 요약 파일을 demo-app이 읽어 시각화합니다.</p>
-          <div id="latest-report"></div>
-        </article>
+    <section class="section reveal">
+      <div class="panel k6-panel">
+        <div class="section-head">
+          <div><div class="eyebrow">K6 비교</div><h2>바로 성능을 비교합니다</h2></div>
+          <p>부하 테스트 결과를 평균 응답, P95, 처리량 기준으로 막대 그래프와 수치 카드로 함께 보여줍니다.</p>
+        </div>
+        <div id="k6-compare-panel"></div>
+      </div>
+    </section>
 
-        <article class="panel full">
-          <h2>MiniRedis Playground</h2>
-          <p>랭킹 캐시와 별개로 저장, 조회, 삭제를 직접 시연할 수 있습니다. TTL은 저장 시에만 설정하고, 남은 TTL 조회는 지원하지 않습니다.</p>
-          <div class="playground">
-            <div class="field-group">
-              <label>
-                Key
-                <input id="store-key" type="text" value="demo:manual:ranking" />
-              </label>
-              <label>
-                TTL Seconds (저장 전용)
-                <input id="store-ttl" type="number" min="1" value="30" />
-              </label>
-              <label>
-                JSON Value
-                <textarea id="store-value">{
-  "feature": "manual demo",
-  "scenario": "fashion ranking",
-  "catalog_size": 1000,
-  "top_n": 10
-}</textarea>
-              </label>
-              <div class="button-row">
-                <button id="save-button" type="button">Save</button>
-                <button id="get-button" type="button" class="alt">Get</button>
-                <button id="delete-button" type="button" class="warn">Delete</button>
-              </div>
+    <section class="section reveal">
+      <div class="section-head">
+        <div><div class="eyebrow">상위 랭킹</div><h2>시연 결과를 바로 확인합니다</h2></div>
+        <p>위 버튼을 누르면 여기에 상품 목록이 즉시 갱신됩니다.</p>
+      </div>
+      <div class="panel panel-block">
+        <div class="ranking-grid" id="ranking-preview"></div>
+      </div>
+    </section>
+
+    <section class="section reveal">
+      <div class="section-head">
+        <div><div class="eyebrow">컬렉션</div><h2>상위 상품만 빠르게 모아봅니다</h2></div>
+        <p>설명은 짧게 두고 카드 중심으로 정리했습니다.</p>
+      </div>
+      <div class="collections" id="collections-grid"></div>
+    </section>
+
+    <section class="section reveal">
+      <div class="section-head">
+        <div><div class="eyebrow">랭킹 신호</div><h2>어떤 요소가 점수에 반영되는지 보여줍니다</h2></div>
+        <p>수요, 판매, 리뷰 축만 남겨 시연 중에도 빠르게 읽히도록 했습니다.</p>
+      </div>
+      <div class="signals" id="signals-grid"></div>
+    </section>
+
+    <section class="section reveal">
+      <details>
+        <summary>운영자 실험 패널</summary>
+        <div class="operator-body">
+          <div class="panel operator">
+            <div class="field"><label for="playground-key">키</label><input id="playground-key" value="look:home:hero" /></div>
+            <div class="field"><label for="playground-value">값</label><textarea id="playground-value">{"title":"우주 룩북","badge":"editor-pick"}</textarea></div>
+            <div class="field"><label for="playground-ttl">TTL</label><input id="playground-ttl" type="number" min="1" value="15" /></div>
+            <div class="hero-actions">
+              <button class="btn btn-primary" id="playground-set" type="button">저장</button>
+              <button class="btn btn-secondary" id="playground-get" type="button">조회</button>
+              <button class="btn btn-secondary" id="playground-delete" type="button">삭제</button>
             </div>
-            <pre id="playground-output">playground result will appear here</pre>
           </div>
-          <p class="footnote">k6 결과 파일 경로: <span id="report-path"></span></p>
-        </article>
-      </section>
-    </main>
-
-    <script>
-      const scenarioChips = document.getElementById('scenario-chips');
-      const previewList = document.getElementById('ranking-preview');
-      const liveMetrics = document.getElementById('live-metrics');
-      const latestReport = document.getElementById('latest-report');
-      const reportPath = document.getElementById('report-path');
-      const storeKeyInput = document.getElementById('store-key');
-      const storeTtlInput = document.getElementById('store-ttl');
-      const storeValueInput = document.getElementById('store-value');
-      const playgroundOutput = document.getElementById('playground-output');
-
-      function formatMs(value) {
-        if (value === null || value === undefined) {
-          return '-';
-        }
-        return `${Number(value).toFixed(2)} ms`;
-      }
-
-      function formatPercent(value, digits = 2) {
-        if (value === null || value === undefined) {
-          return '-';
-        }
-        return `${Number(value).toFixed(digits)}%`;
-      }
-
-      function formatInteger(value) {
-        return new Intl.NumberFormat('ko-KR').format(value || 0);
-      }
-
-      function escapeHtml(value) {
-        return String(value)
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;')
-          .replaceAll('"', '&quot;')
-          .replaceAll("'", '&#39;');
-      }
-
-      function metricCard(title, theme, metric, description) {
-        const hasCacheStats = (metric.cache_hits || 0) + (metric.cache_misses || 0) > 0;
-        const cacheLine = hasCacheStats
-          ? `hit ${formatInteger(metric.cache_hits)} / miss ${formatInteger(metric.cache_misses)} / hit ratio ${formatPercent((metric.hit_ratio || 0) * 100)}`
-          : 'cache bypass path';
-
-        return `
-          <article class="metric-card ${theme}">
-            <div class="metric-title">
-              <span>${title}</span>
-              <span>${formatInteger(metric.requests)} req</span>
-            </div>
-            <div class="metric-value">${formatMs(metric.avg_ms)}</div>
-            <div class="metric-sub">
-              p95 ${formatMs(metric.p95_ms)} · last ${formatMs(metric.last_ms)} · fail ${formatPercent((metric.failure_rate || 0) * 100)}<br />
-              ${escapeHtml(description)}<br />
-              ${escapeHtml(cacheLine)}
-            </div>
-          </article>
-        `;
-      }
-
-      function renderScenario(data) {
-        const scenario = data.scenario;
-        const chips = [
-          scenario.title,
-          `${formatInteger(scenario.catalog_size)} candidates`,
-          `Top ${scenario.top_n}`,
-          `TTL ${scenario.ttl_seconds}s`,
-          scenario.load_profile,
-          scenario.cache_key,
-        ];
-
-        scenarioChips.innerHTML = chips
-          .map((value) => `<div class="chip">${escapeHtml(value)}</div>`)
-          .join('');
-
-        reportPath.textContent = data.report_path;
-      }
-
-      function renderPreview(preview) {
-        previewList.innerHTML = preview.top_products
-          .map((product) => `
-            <li class="preview-item">
-              <div class="rank-pill">#${product.rank}</div>
-              <div>
-                <div class="preview-name">${escapeHtml(product.name)}</div>
-                <div class="preview-meta">
-                  ${escapeHtml(product.brand)} · ${escapeHtml(product.category)} · 판매 ${formatInteger(product.sales_28d)} · 좋아요 ${formatInteger(product.likes_28d)}
-                </div>
-              </div>
-              <div class="score">${product.score.toFixed(2)}</div>
-            </li>
-          `)
-          .join('');
-      }
-
-      function renderLiveMetrics(metrics) {
-        liveMetrics.innerHTML = [
-          metricCard('Ranking Direct', 'db', metrics.ranking_direct, '매 요청마다 1000개 후보를 다시 계산합니다.'),
-          metricCard('Ranking Cache', 'cache', metrics.ranking_cache, 'ranking:top10 캐시를 먼저 읽고, miss일 때만 다시 계산합니다.'),
-        ].join('');
-      }
-
-      function compareBars(label, directValue, cacheValue, suffix, higherIsBetter = false) {
-        const base = Math.max(directValue || 0, cacheValue || 0, 1);
-        const directWidth = `${((directValue || 0) / base) * 100}%`;
-        const cacheWidth = `${((cacheValue || 0) / base) * 100}%`;
-        const note = higherIsBetter
-          ? `Direct ${directValue}${suffix} / Cache ${cacheValue}${suffix}`
-          : `Direct ${directValue}${suffix} / Cache ${cacheValue}${suffix}`;
-
-        return `
-          <div class="bar-row">
-            <div class="bar-label">
-              <span>${label}</span>
-              <span>${note}</span>
-            </div>
-            <div class="bar-track"><div class="bar-fill db" style="width:${directWidth}"></div></div>
-            <div class="bar-track"><div class="bar-fill cache" style="width:${cacheWidth}"></div></div>
+          <div class="panel operator">
+            <pre class="results-log" id="playground-log">플레이그라운드 응답이 여기에 표시됩니다.</pre>
+            <p class="fine">메인 시연을 방해하지 않도록 접어둘 수 있게 유지했습니다.</p>
           </div>
-        `;
-      }
+        </div>
+      </details>
+    </section>
+  </div>
 
-      function reportSummaryCard(label, tone, endpoint) {
-        return `
-          <article class="metric-card ${tone}">
-            <div class="metric-title">
-              <span>${label}</span>
-              <span>${formatInteger(endpoint.request_count)} req</span>
+  <script>
+    function fmtNumber(v){if(v===null||v===undefined||Number.isNaN(Number(v)))return "-";return new Intl.NumberFormat("ko-KR").format(Number(v))}
+    function fmtMs(v){if(v===null||v===undefined)return "-";return `${Number(v).toFixed(0)}ms`}
+    function fmtPct(v){if(v===null||v===undefined)return "-";return `${Number(v).toFixed(1)}%`}
+    function fmtPrice(v){if(v===null||v===undefined)return "-";return `${new Intl.NumberFormat("ko-KR").format(Number(v))}원`}
+    function fmtRps(v){if(v===null||v===undefined)return "-";return `${Number(v).toFixed(1)} rps`}
+    function setText(id,v){const el=document.getElementById(id);if(el)el.textContent=v}
+    function appendLog(id,message,clear=false){const target=document.getElementById(id);const stamp=new Date().toLocaleTimeString("ko-KR");target.textContent=clear?`[${stamp}] ${message}`:`${target.textContent}\n[${stamp}] ${message}`}
+    let revealObserver = null
+    function activateReveal(){
+      const items = document.querySelectorAll(".reveal")
+      if(window.matchMedia("(prefers-reduced-motion: reduce)").matches){items.forEach((item)=>item.classList.add("is-visible"));return}
+      if(!revealObserver){
+        revealObserver = new IntersectionObserver((entries)=>{entries.forEach((entry)=>{entry.target.classList.toggle("is-visible", entry.isIntersecting)})},{threshold:.18})
+      }
+      items.forEach((item)=>revealObserver.observe(item))
+    }
+    function renderHero(data){
+      const hero = data.hero || {}
+      const featured = hero.featured || {}
+      setText("hero-eyebrow", hero.eyebrow || "MINI REDIS FASHION DEMO")
+      setText("hero-title", hero.title || "랭킹은 그대로, \n체감 속도만 빠르게")
+      setText("hero-subtitle", hero.subtitle || "상위 상품을 불러오는 중입니다.")
+      setText("featured-name", featured.name || "대표 상품")
+      setText("featured-copy", featured.name ? `${featured.brand} / ${fmtPrice(featured.price_krw)} / 전환율 ${fmtPct(featured.conversion_pct)}` : "데이터를 불러오는 중입니다.")
+      document.getElementById("featured-image").src = featured.image_url || ""
+      const chips = document.getElementById("hero-chips")
+      chips.innerHTML = ""
+      ;(hero.chips || []).forEach((chip)=>{const el=document.createElement("span");el.className="chip";el.textContent=chip;chips.appendChild(el)})
+    }
+    function renderCollections(data){
+      const grid = document.getElementById("collections-grid")
+      grid.innerHTML = ""
+      ;(data.collections || []).forEach((collection)=>{const card=document.createElement("article");card.className="panel collection reveal";card.innerHTML=`<div class="eyebrow">${collection.title}</div><h3>${collection.title}</h3><div class="collection-grid">${(collection.products || []).map((product)=>`<article class="product-card"><div class="product-thumb"><img src="${product.image_url}" alt="${product.name}" loading="lazy" /></div><div><div class="product-kicker">#${product.rank} / ${product.brand}</div><div class="product-name">${product.name}</div><div class="meta"><span>${fmtPrice(product.price_krw)}</span><span>전환 ${fmtPct(product.conversion_pct)}</span><span>위시 ${fmtNumber(product.wishlists_28d)}</span></div></div></article>`).join("")}</div>`;grid.appendChild(card)})
+    }
+    function renderSignals(data){
+      const grid = document.getElementById("signals-grid")
+      grid.innerHTML = ""
+      ;(data.signals || []).forEach((signal)=>{const card=document.createElement("article");card.className="panel signal-card reveal";card.innerHTML=`<div class="eyebrow">${signal.title}</div><h3>${signal.title}</h3><p>${signal.copy}</p>`;grid.appendChild(card)})
+    }
+    function renderRankingPreview(products){
+      const container = document.getElementById("ranking-preview")
+      if(!products || !products.length){container.innerHTML='<div class="empty">랭킹 데이터를 불러오지 못했습니다.</div>';return}
+      container.innerHTML = products.map((product)=>`<div class="ranking-row"><div class="pill">#${product.rank}</div><div><strong>${product.name}</strong><br /><span class="fine">${product.brand} / ${product.category}</span></div><div>${fmtPrice(product.price_krw)}</div><div>조회 ${fmtNumber(product.views_28d)}</div><div>판매 ${fmtNumber(product.sales_28d)}</div><div>${product.score}</div></div>`).join("")
+    }
+    function renderK6Compare(data){
+      const target = document.getElementById("k6-compare-panel")
+      const compare = data.k6_compare || {}
+      if(!compare.available){
+        target.innerHTML = '<div class="k6-empty">k6 비교 리포트가 아직 없습니다. 테스트 결과가 생성되면 여기에 바로 표시됩니다.</div>'
+        return
+      }
+      const metrics = [
+        {key:"avg_ms", label:"평균 응답", formatter:fmtMs, largerBetter:false},
+        {key:"p95_ms", label:"P95 응답", formatter:fmtMs, largerBetter:false},
+        {key:"rps", label:"처리량", formatter:fmtRps, largerBetter:true},
+      ]
+      const summary = metrics.map((metric)=>{
+        const item = compare[metric.key] || {}
+        return `<article class="k6-summary-card reveal"><div class="eyebrow">${metric.label}</div><strong>${fmtPct(item.improvement_pct)}</strong><div class="fine">직접 ${metric.formatter(item.direct)} / 캐시 ${metric.formatter(item.cache)}</div></article>`
+      }).join("")
+      const bars = metrics.map((metric)=>{
+        const item = compare[metric.key] || {}
+        const direct = Number(item.direct || 0)
+        const cache = Number(item.cache || 0)
+        const baseline = Math.max(direct, cache, 1)
+        return `<div class="k6-bar-group">
+          <div class="k6-bar-head">
+            <strong>${metric.label}</strong>
+            <span class="fine">${fmtPct(item.improvement_pct)} ${metric.largerBetter ? "향상" : "단축"}</span>
+          </div>
+          <div class="k6-track">
+            <div class="k6-bar-row">
+              <div class="k6-bar-label">직접</div>
+              <div class="k6-bar-fill"><span class="direct" style="width:${Math.max(8, direct / baseline * 100)}%"></span></div>
+              <div class="k6-bar-value">${metric.formatter(item.direct)}</div>
             </div>
-            <div class="metric-value">${formatMs(endpoint.avg_ms)}</div>
-            <div class="metric-sub">
-              p95 ${formatMs(endpoint.p95_ms)} · fail ${formatPercent(endpoint.fail_rate * 100)}<br />
-              ${Number(endpoint.rps).toFixed(2)} RPS
+            <div class="k6-bar-row">
+              <div class="k6-bar-label">캐시</div>
+              <div class="k6-bar-fill"><span class="cache" style="width:${Math.max(8, cache / baseline * 100)}%"></span></div>
+              <div class="k6-bar-value">${metric.formatter(item.cache)}</div>
             </div>
-          </article>
-        `;
-      }
-
-      function renderLatestReport(report) {
-        if (!report) {
-          latestReport.innerHTML = '<div class="empty">아직 k6 요약 파일이 없습니다. <code>k6 run k6/basic.js</code> 를 실행하면 이 영역이 채워집니다.</div>';
-          return;
-        }
-
-        if (report.status === 'invalid' || report.status === 'stale') {
-          latestReport.innerHTML = `<div class="empty">${escapeHtml(report.message || '요약 파일을 읽지 못했습니다.')}</div>`;
-          return;
-        }
-
-        const direct = report.endpoints.ranking_direct;
-        const cache = report.endpoints.ranking_cache;
-        const comparison = report.comparison;
-
-        latestReport.innerHTML = `
-          <div class="metric-grid">
-            ${reportSummaryCard('K6 Ranking Direct', 'db', direct)}
-            ${reportSummaryCard('K6 Ranking Cache', 'cache', cache)}
           </div>
-          <div class="bars">
-            ${compareBars('Average latency', direct.avg_ms, cache.avg_ms, ' ms')}
-            ${compareBars('p95 latency', direct.p95_ms, cache.p95_ms, ' ms')}
-            ${compareBars('RPS', direct.rps, cache.rps, '', true)}
-          </div>
-          <div class="empty">
-            평균 응답시간 개선: <strong>${formatPercent(comparison.avg_latency_improvement_pct)}</strong><br />
-            p95 개선: <strong>${formatPercent(comparison.p95_latency_improvement_pct)}</strong><br />
-            처리량 증가: <strong>${formatPercent(comparison.rps_gain_pct)}</strong><br />
-            마지막 요약 시각: <strong>${escapeHtml(report.generated_at || '-')}</strong>
-          </div>
-        `;
+        </div>`
+      }).join("")
+      target.innerHTML = `<div class="k6-shell"><div class="k6-summary-grid">${summary}</div><div class="k6-chart reveal">${bars}</div></div>`
+    }
+    function renderProof(data){
+      const proof = data.proof || {}
+      const cacheDemo = data.cache_demo || {}
+      setText("cache-ttl", `${cacheDemo.ttl_seconds || 5}초`)
+      setText("proof-lift", proof.cards?.[0]?.value || "-")
+      setText("live-hit-rate-hero", fmtPct(cacheDemo.cache_hit_rate_pct))
+      setText("live-hit-rate", fmtPct(cacheDemo.cache_hit_rate_pct))
+      setText("live-cache-avg", fmtMs(cacheDemo.cache_avg_ms))
+      setText("live-direct-avg", fmtMs(cacheDemo.direct_avg_ms))
+      setText("proof-copy", proof.cards?.length ? "측정된 k6 결과를 반영했습니다." : "표시할 측정 카드가 아직 없습니다.")
+      const grid = document.getElementById("proof-grid")
+      grid.innerHTML = (proof.cards || []).length ? (proof.cards || []).map((card)=>`<article class="panel proof-card reveal"><div class="eyebrow">${card.label}</div><strong>${card.value}</strong><div class="fine">${card.detail}</div></article>`).join("") : '<article class="panel proof-card reveal"><div class="empty">표시할 성능 카드가 없습니다.</div></article>'
+    }
+    async function loadDashboard(){
+      const response = await fetch("/dashboard-data")
+      if(!response.ok) throw new Error("dashboard-data failed")
+      const data = await response.json()
+      renderHero(data)
+      renderCollections(data)
+      renderSignals(data)
+      renderRankingPreview(data.ranking_preview?.top_products || [])
+      renderK6Compare(data)
+      renderProof(data)
+      activateReveal()
+    }
+    async function runRequest(url, label){
+      const started = performance.now()
+      const response = await fetch(url)
+      const elapsed = performance.now() - started
+      const payload = await response.json()
+      if(!response.ok) throw new Error(payload.detail || `${label} 실패`)
+      appendLog("result-log", `${label} / ${payload.cache_status} / ${payload.source} / ${elapsed.toFixed(0)}ms`, true)
+      renderRankingPreview(payload.ranking?.top_products || [])
+      await loadDashboard()
+      return payload
+    }
+    async function playgroundRequest(method){
+      const key = document.getElementById("playground-key").value.trim()
+      const ttlValue = document.getElementById("playground-ttl").value.trim()
+      const rawValue = document.getElementById("playground-value").value.trim()
+      let response
+      if(method === "set"){
+        let parsedValue = rawValue
+        try { parsedValue = JSON.parse(rawValue) } catch (_error) {}
+        response = await fetch("/demo-store", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key, value: parsedValue, ttl_seconds: ttlValue ? Number(ttlValue) : null})})
+      } else if(method === "get"){
+        response = await fetch(`/demo-store?key=${encodeURIComponent(key)}`)
+      } else {
+        response = await fetch(`/demo-store?key=${encodeURIComponent(key)}`, { method: "DELETE" })
       }
-
-      async function refreshDashboard() {
-        const response = await fetch('/dashboard-data');
-        const payload = await response.json();
-
-        renderScenario(payload);
-        renderPreview(payload.ranking_preview);
-        renderLiveMetrics(payload.live_metrics);
-        renderLatestReport(payload.latest_report);
-      }
-
-      async function callPlayground(method) {
-        const key = storeKeyInput.value.trim();
-        if (!key) {
-          playgroundOutput.textContent = 'key is required';
-          return;
-        }
-
-        let response;
-        if (method === 'POST') {
-          let parsedValue;
-          try {
-            parsedValue = JSON.parse(storeValueInput.value);
-          } catch (error) {
-            playgroundOutput.textContent = `invalid JSON: ${error.message}`;
-            return;
-          }
-
-          response = await fetch('/demo-store', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              key,
-              value: parsedValue,
-              ttl_seconds: storeTtlInput.value ? Number(storeTtlInput.value) : null,
-            }),
-          });
-        } else {
-          const url = `/demo-store?key=${encodeURIComponent(key)}`;
-          response = await fetch(url, { method });
-        }
-
-        const payload = await response.json();
-        playgroundOutput.textContent = JSON.stringify(payload, null, 2);
-      }
-
-      document.getElementById('save-button').addEventListener('click', () => callPlayground('POST'));
-      document.getElementById('get-button').addEventListener('click', () => callPlayground('GET'));
-      document.getElementById('delete-button').addEventListener('click', () => callPlayground('DELETE'));
-
-      refreshDashboard().catch((error) => {
-        latestReport.innerHTML = `<div class="empty">dashboard-data를 읽지 못했습니다: ${escapeHtml(error.message)}</div>`;
-      });
-      window.setInterval(() => {
-        refreshDashboard().catch((error) => {
-          latestReport.innerHTML = `<div class="empty">dashboard-data를 읽지 못했습니다: ${escapeHtml(error.message)}</div>`;
-        });
-      }, 2000);
-    </script>
-  </body>
-</html>
-"""
+      const payload = await response.json()
+      appendLog("playground-log", JSON.stringify(payload, null, 2), true)
+    }
+    document.getElementById("compare-cache").addEventListener("click", ()=>runRequest("/ranking-cache", "캐시 랭킹").catch((error)=>appendLog("result-log", error.message, true)))
+    document.getElementById("compare-direct").addEventListener("click", ()=>runRequest("/ranking-direct", "직접 랭킹").catch((error)=>appendLog("result-log", error.message, true)))
+    document.getElementById("playground-set").addEventListener("click", ()=>playgroundRequest("set").catch((error)=>appendLog("playground-log", error.message, true)))
+    document.getElementById("playground-get").addEventListener("click", ()=>playgroundRequest("get").catch((error)=>appendLog("playground-log", error.message, true)))
+    document.getElementById("playground-delete").addEventListener("click", ()=>playgroundRequest("delete").catch((error)=>appendLog("playground-log", error.message, true)))
+    loadDashboard().catch((error)=>appendLog("result-log", `초기 로딩 실패: ${error.message}`, true))
+  </script>
+</body>
+</html>"""
