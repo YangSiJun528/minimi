@@ -1,4 +1,6 @@
+import asyncio
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -6,20 +8,29 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+
+import server as server_module
+from core import MiniRedisStore
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture(scope="session")
-def base_url() -> str:
+@contextmanager
+def running_server(extra_env: dict[str, str] | None = None):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
+
+    env = os.environ.copy()
+    if extra_env is not None:
+        env.update(extra_env)
 
     process = subprocess.Popen(
         [
@@ -33,6 +44,7 @@ def base_url() -> str:
             str(port),
         ],
         cwd=PROJECT_DIR,
+        env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
@@ -56,6 +68,12 @@ def base_url() -> str:
             process.wait(timeout=5)
         except Exception:
             process.kill()
+
+
+@pytest.fixture(scope="session")
+def base_url() -> str:
+    with running_server() as url:
+        yield url
 
 
 @pytest.fixture
@@ -94,6 +112,49 @@ def patch_json(url: str, path: str, payload: dict) -> dict:
 
 def delete_json(url: str, path: str, payload: dict) -> dict:
     return request_json(url, "DELETE", path, payload)
+
+
+def test_cleanup_interval_기본값은_10초다(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MINIREDIS_CLEANUP_INTERVAL_SECONDS", raising=False)
+
+    assert server_module.get_cleanup_interval_seconds() == 10.0
+
+
+@pytest.mark.parametrize("raw_value", ["0", "-1", "abc"])
+def test_cleanup_interval이_양수가_아니면_예외다(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+) -> None:
+    monkeypatch.setenv("MINIREDIS_CLEANUP_INTERVAL_SECONDS", raw_value)
+
+    with pytest.raises(RuntimeError, match="positive number"):
+        server_module.get_cleanup_interval_seconds()
+
+
+@pytest.mark.anyio
+async def test_백그라운드_cleanup_loop가_접근없는_만료키를_정리한다() -> None:
+    test_store = MiniRedisStore()
+    base = 1000.0
+
+    with patch("core.time") as mock_time:
+        mock_time.monotonic.return_value = base
+        test_store.set("k", "v", ttl_seconds=1)
+
+        call_count = 0
+
+        async def fake_sleep(_: float) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                mock_time.monotonic.return_value = base + 2
+                return
+            raise asyncio.CancelledError
+
+        with pytest.raises(asyncio.CancelledError):
+            await server_module.cleanup_expired_periodically(test_store, 10, sleep_fn=fake_sleep)
+
+    assert "k" not in test_store._data
+    assert "k" not in test_store._expires
 
 
 def test_헬스체크_성공(base_url: str) -> None:
@@ -187,3 +248,20 @@ def test_cleanup_expired가_만료된_키를_정리한다(base_url: str, unique_
     assert got_after["success"] is False
     assert got_after["found"] is False
     assert got_after["message"] == "not found"
+
+
+def test_백그라운드_cleanup이_수동수거_전에_만료키를_정리한다(unique_key: str) -> None:
+    with running_server({"MINIREDIS_CLEANUP_INTERVAL_SECONDS": "0.1"}) as custom_base_url:
+        created = post_json(
+            custom_base_url,
+            "/set",
+            {"key": unique_key, "value": "value", "ttl_seconds": 1},
+        )
+
+        time.sleep(1.5)
+
+        cleaned = post_json(custom_base_url, "/cleanup_expired")
+
+    assert created["success"] is True
+    assert cleaned["success"] is True
+    assert cleaned["message"] == "cleaned 0 expired keys"

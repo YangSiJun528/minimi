@@ -47,6 +47,8 @@
 - 문자열 key와 JSON value를 다루는 Mini Redis HTTP API
 - `set/get/delete/exists/incr/expire/ttl/cleanup_expired` 제공
 - `set` 요청의 `ttl_seconds`로 lazy expiration TTL을 설정할 수 있다
+- 접근이 없는 만료 키도 기본 10초 주기 백그라운드 cleanup으로 수거한다
+- `POST /cleanup_expired`는 수동 수거와 디버깅용으로 유지한다
 
 ### `demo-app`
 
@@ -87,6 +89,7 @@
 - 마지막 `k6` 실행 결과 파일 `demo-app/perf-results/latest.json` 을 읽어 카드와 비교 바 형태로 보여준다.
 - 페이지 안에서 `MiniRedis` 저장/조회/삭제도 직접 시연할 수 있다.
 - playground에서는 TTL을 저장 시에만 설정하며, 남은 TTL은 별도로 표시하지 않는다.
+- 접근이 없는 만료 키는 백그라운드 cleanup이 최대 10초 안에 메모리에서 정리한다.
 
 ## 실행 방법
 
@@ -98,6 +101,7 @@ docker compose up --build
 
 - `demo-app`: `http://localhost:8001`
 - `miniredis`: `http://localhost:8000`
+- MiniRedis TTL cleanup 주기는 기본 10초이며 `MINIREDIS_CLEANUP_INTERVAL_SECONDS`로 조정할 수 있다
 
 ### Docker 없이 로컬 실행
 
@@ -106,6 +110,13 @@ docker compose up --build
 ```bash
 cd miniredis
 uv run uvicorn server:app --host 127.0.0.1 --port 8000
+```
+
+필요하면 cleanup 주기를 바꿔 실행할 수 있다.
+
+```bash
+cd miniredis
+MINIREDIS_CLEANUP_INTERVAL_SECONDS=10 uv run uvicorn server:app --host 127.0.0.1 --port 8000
 ```
 
 터미널 2:
@@ -198,6 +209,7 @@ k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_
 
 대시보드의 `MiniRedis Playground` 섹션에서 직접 저장/조회/삭제할 수 있다.
 TTL은 저장 시에만 설정하며, 조회 응답에서 남은 TTL은 보여주지 않는다.
+수동 수거가 필요하면 `POST /cleanup_expired`를 호출할 수 있다.
 
 API로 직접 확인하려면:
 
