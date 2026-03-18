@@ -3,7 +3,7 @@
 > Minimi is Mini My In-Memory
 - `miniredis`: JSON key-value 저장과 set 시 TTL 설정을 지원하는 Mini Redis HTTP API
 - `demo-app`: 캐시 없는 랭킹 조회와 캐시 조회를 비교하는 FastAPI 데모 앱
-- `k6`: demo-app 캐시 성능과 MiniRedis 동시성 시나리오를 재현하는 부하 테스트 스크립트
+- `k6`: demo-app 캐시 성능과 MiniRedis 원자성 검증 시나리오를 재현하는 부하 테스트 스크립트
 
 # 📌 기술 선택 이유
 ### HTTP vs TCP/소켓 → HTTP 선택
@@ -136,9 +136,9 @@ curl "http://localhost:8001/demo-store?key=demo:manual:ranking"
 
 curl -X DELETE "http://localhost:8001/demo-store?key=demo:manual:ranking"
 ```
-### MiniRedis 동시성 시나리오
+### MiniRedis 원자성 검증 시나리오
 
-- MiniRedis 동시성 검증 스크립트는 `k6/miniredis/` 아래에 둔다.
+- MiniRedis 원자성 검증 스크립트는 `k6/miniredis/` 아래에 둔다.
 - `incr-concurrency.js`는 같은 키에 `POST /incr`를 동시에 보내고 최종 값이 정확히 `VUS * ITERATIONS_PER_VU`인지 확인한다.
 - `rmw-failure.js`는 클라이언트에서 `GET -> +1 -> SET`를 수행해 contention 상황의 lost update를 의도적으로 재현한다.
 - `incr-concurrency.js`의 성공은 현재 단일 프로세스 `uvicorn` 실행 기준에서의 정확한 누적 검증이다.
@@ -160,30 +160,6 @@ k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_
 ```
 
 
-# 📌 문제 발견 및 해결
-
-## 문제 상황
-
-초기 구현에서 Codex가 생성한 코드에는  
-불필요한 `async/await` 사용이 과도하게 포함되어 있었다.
-
-- 대부분의 로직이 **메모리 기반 연산 (딕셔너리 접근)**
-- I/O 작업이 없기 때문에 비동기의 이점을 활용하지 못함
-
-## 분석
-
-비동기가 필요한 경우는 :
-- TTL 만료 처리를 위한 **주기적 정리 (active cleanup)**
-
-이 외의 작업은 모두:
-- 즉시 실행되는 CPU 연산
-- 동기 방식이 더 적합
-
-## 해결
-- 불필요한 `async/await` 제거
-- 저장소 로직을 **동기 방식으로 단순화**
-- 필요한 부분(TTL cleanup 등)에만 비동기 또는 주기 작업 적용
-
 ## 📌 결과 해석
 - `ranking-direct`는 매 요청마다 직접 계산을 수행하므로 평균 응답 시간과 p95가 높게 나오는 것이 정상이다.
 - `ranking-cache`는 대부분 캐시 hit이므로 평균 응답 시간과 p95가 더 낮아지는 것이 정상이다.
@@ -197,7 +173,7 @@ k6 run -e MINIREDIS_BASE_URL=http://localhost:8000 -e VUS=100 -e ITERATIONS_PER_
 ## 📌팀원 역할
 - 양시준: CRUD 코어, 기획
 - 여서진: 데모앱 제작, k6 캐시 성능 테스트
-- 이시원: API 제작, 서버, k6 동시성 테스트
+- 이시원: API 제작, 서버, k6 원자성 검증 테스트
 
   
 ## 📌 검증
